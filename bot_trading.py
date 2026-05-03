@@ -216,10 +216,10 @@ def scorer_marche(symbole):
     tendance = get_tendance_macd(closes)
 
     # Si MACD contredit la direction → on bloque le trade
-    if tendance == "HAUSSIERE" and direction == "VENTE":
+    if tendance == 'HAUSSIERE' and direction == 'VENTE':
         print(f"    {symbole} : MACD HAUSSIER — VENTE bloquee")
         return 0, "NEUTRE", {}
-    elif tendance == "BAISSIERE" and direction == "ACHAT":
+    elif tendance == 'BAISSIERE' and direction == 'ACHAT':
         print(f"    {symbole} : MACD BAISSIER — ACHAT bloque")
         return 0, "NEUTRE", {}
 
