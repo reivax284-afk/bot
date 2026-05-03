@@ -22,11 +22,12 @@ GAIN_CIBLE        = 1.0    # +1.50EUR
 STOP_LOSS         = -25.0   # -1.50EUR
 PAUSE             = 120     # 2 minutes entre trades
 SCORE_MIN         = 10      # Ne trade que si score > 15/30
-MARCHES           = ["ETHUSDT", "SOLUSDT", "XRPUSDT"]
+MARCHES           = ["ETHUSDT", "SOLUSDT", "XRPUSDT", "AVAXUSDT"]
 FICHIER_ETAT      = "etat_bot.json"
 
 KRAKEN_SYMBOLS = {
-    "XRPUSDT": "XRPUSD",
+    "AVAXUSDT": "AVAXUSD",
+    "XRPUSDT": "XXRPZUSD",
     "ETHUSDT": "XETHZUSD",
     "SOLUSDT": "SOLUSDT"
 }
@@ -66,11 +67,20 @@ def get_klines(symbole, limite=50):
     try:
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
-        if data.get("error"):
+        errors = data.get("error", [])
+        if errors:
+            print(f"  Erreur Kraken {symbole} : {errors}")
             return None, None, None
         result = data.get("result", {})
-        key = [k for k in result.keys() if k != "last"][0]
+        keys = [k for k in result.keys() if k != "last"]
+        if not keys:
+            print(f"  Pas de donnees pour {symbole}")
+            return None, None, None
+        key = keys[0]
         candles = result[key]
+        if not candles:
+            print(f"  Bougies vides pour {symbole}")
+            return None, None, None
         closes = [float(k[4]) for k in candles]
         highs  = [float(k[2]) for k in candles]
         lows   = [float(k[3]) for k in candles]
@@ -340,4 +350,5 @@ def demarrer_bot():
 
 if __name__ == "__main__":
     demarrer_bot()
+
 
