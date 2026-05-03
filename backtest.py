@@ -7,7 +7,7 @@ import time
 INITIAL_BET = 5.0
 LEVERAGE = 3
 TARGET_MULTIPLIER = 3
-DAYS_BACKTEST = 90
+DAYS_BACKTEST = 365
 
 def get_klines_coingecko(coin_id, days=90):
     """
