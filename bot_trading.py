@@ -163,11 +163,11 @@ def get_tendance_macd(closes):
     macd, signal, histo = calculer_macd(closes)
 
     if macd > signal and histo > 0:
-        return HAUSSIERE
+        return 'HAUSSIERE'
     elif macd < signal and histo < 0:
-        return BAISSIERE
+        return 'BAISSIERE'
     else:
-        return NEUTRE
+        return 'NEUTRE'
 
 # ══════════════════════════════════════════════════════════════
 # SCORING ET CHOIX DU MARCHÉ
