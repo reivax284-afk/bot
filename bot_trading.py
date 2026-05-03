@@ -17,7 +17,7 @@ from datetime import datetime
 
 MISE         = 50.0
 LEVIER       = 3
-GAIN_CIBLE   = 1.0    # Ferme dès +1EUR
+GAIN_CIBLE   = 0.10    # Ferme dès +1EUR
 STOP_LOSS    = -25.0  # Ferme dès -25EUR
 PAUSE_ENTRE_TRADES = 600  # 10 minutes en secondes
 MARCHES      = ["ETHUSDT", "SOLUSDT"]
@@ -31,7 +31,7 @@ COINGECKO_IDS = {
 print("=" * 55)
 print("  BOT SCALPING — SIMULATION COMPLETE")
 print(f"  Mise fixe   : {MISE}EUR | Levier : x{LEVIER}")
-print(f"  Objectif    : +{GAIN_CIBLE}EUR | Stop : {STOP_LOSS}EUR")
+print(f"  Objectif    : +{GAIN_CIBLE}EUR (10 centimes) | Stop : {STOP_LOSS}EUR")
 print(f"  Pause       : {PAUSE_ENTRE_TRADES//60} minutes entre chaque trade")
 print("=" * 55)
 
