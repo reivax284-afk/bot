@@ -1,7 +1,7 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║       BOT MARTINGALE — MODE SIMULATION COMPLÈTE             ║
-║       Objectif 15% | Stop 15% | Levier x3                  ║
+║       BOT MARTINGALE — SCALPING SIMULATION                  ║
+║       Mise fixe 50EUR | +1EUR = ferme | -25EUR = ferme      ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -15,29 +15,29 @@ from datetime import datetime
 # CONFIGURATION
 # ══════════════════════════════════════════════════════════════
 
-MISE_DEPART  = float(os.environ.get("MISE_DEPART", "50.0"))
-LEVIER       = int(os.environ.get("LEVIER", "3"))
-OBJECTIF_PCT = 0.15   # 15% de mouvement sur le prix
-STOP_PCT     = 0.15   # Stop-loss 15%
-GAIN_RATIO   = LEVIER * OBJECTIF_PCT  # 0.45 = +45% de la mise si gagné
+MISE         = 50.0
+LEVIER       = 3
+GAIN_CIBLE   = 1.0    # Ferme dès +1EUR
+STOP_LOSS    = -25.0  # Ferme dès -25EUR
+PAUSE_ENTRE_TRADES = 600  # 10 minutes en secondes
 MARCHES      = ["ETHUSDT", "SOLUSDT"]
 FICHIER_ETAT = "etat_bot.json"
-
-print("=" * 55)
-print("  BOT MARTINGALE — SIMULATION COMPLETE")
-print(f"  Mise depart : {MISE_DEPART}EUR | Levier : x{LEVIER}")
-print(f"  Objectif    : +{int(OBJECTIF_PCT*100)}% | Stop : -{int(STOP_PCT*100)}%")
-print(f"  Gain/trade  : +{round(MISE_DEPART*GAIN_RATIO,2)}EUR | Perte : -{MISE_DEPART}EUR")
-print("=" * 55)
-
-# ══════════════════════════════════════════════════════════════
-# RÉCUPÉRATION DES PRIX VIA COINGECKO
-# ══════════════════════════════════════════════════════════════
 
 COINGECKO_IDS = {
     "ETHUSDT": "ethereum",
     "SOLUSDT": "solana"
 }
+
+print("=" * 55)
+print("  BOT SCALPING — SIMULATION COMPLETE")
+print(f"  Mise fixe   : {MISE}EUR | Levier : x{LEVIER}")
+print(f"  Objectif    : +{GAIN_CIBLE}EUR | Stop : {STOP_LOSS}EUR")
+print(f"  Pause       : {PAUSE_ENTRE_TRADES//60} minutes entre chaque trade")
+print("=" * 55)
+
+# ══════════════════════════════════════════════════════════════
+# RÉCUPÉRATION DES PRIX
+# ══════════════════════════════════════════════════════════════
 
 def get_klines(symbole, limite=50):
     coin_id = COINGECKO_IDS.get(symbole)
@@ -101,7 +101,6 @@ def calculer_volatilite(closes, highs, lows, periode=14):
 # ══════════════════════════════════════════════════════════════
 
 def scorer_marche(symbole):
-    print(f"\n  Analyse {symbole}...")
     closes, highs, lows = get_klines(symbole)
     if closes is None:
         return 0, "NEUTRE", {}
@@ -139,101 +138,80 @@ def scorer_marche(symbole):
     if direction == "NEUTRE":
         direction = direction_ma
 
-    print(f"    RSI        : {rsi} -> {score_rsi}/10 ({direction})")
-    print(f"    MA         : {score_ma}/10")
-    print(f"    Volatilite : {volatilite}% -> {score_vol}/10")
-    print(f"    SCORE      : {score_total}/30")
-
     return score_total, direction, {
         "rsi": rsi, "score_total": score_total, "direction": direction
     }
 
 def choisir_meilleur_marche():
-    print("\n" + "-"*55)
-    print("  SELECTION DU MARCHE DU JOUR")
-    print("-"*55)
+    print("\n  Analyse des marches...")
     resultats = {}
     for marche in MARCHES:
         score, direction, details = scorer_marche(marche)
         resultats[marche] = {"score": score, "direction": direction, "details": details}
+        print(f"    {marche} : score {score}/30 ({direction})")
         time.sleep(2)
     meilleur = max(resultats, key=lambda x: resultats[x]["score"])
-    print(f"\n  MARCHE CHOISI : {meilleur} (score {resultats[meilleur]['score']}/30)")
-    print(f"  Direction     : {resultats[meilleur]['direction']}")
+    print(f"  => CHOIX : {meilleur} ({resultats[meilleur]['direction']})")
     return meilleur, resultats[meilleur]["direction"], resultats[meilleur]["details"]
 
 # ══════════════════════════════════════════════════════════════
-# SIMULATION DU TRADE EN TEMPS RÉEL
+# SIMULATION DU TRADE
 # ══════════════════════════════════════════════════════════════
 
-def simuler_trade(symbole, direction, mise):
+def simuler_trade(symbole, direction, numero_trade):
     prix_entree = get_prix_actuel(symbole)
     if prix_entree is None:
-        return "PERDU", -mise
+        return "ERREUR", 0
+
+    # Calcul du mouvement nécessaire pour +1EUR avec levier x3
+    # +1EUR sur 50EUR = +2% de gain = +0.67% de mouvement prix avec levier x3
+    pct_gain_cible = GAIN_CIBLE / (MISE * LEVIER)
+    pct_stop       = abs(STOP_LOSS) / (MISE * LEVIER)
 
     if direction == "ACHAT":
-        prix_objectif  = round(prix_entree * (1 + OBJECTIF_PCT), 4)
-        prix_stop_loss = round(prix_entree * (1 - STOP_PCT), 4)
+        prix_objectif  = round(prix_entree * (1 + pct_gain_cible), 4)
+        prix_stop_loss = round(prix_entree * (1 - pct_stop), 4)
     else:
-        prix_objectif  = round(prix_entree * (1 - OBJECTIF_PCT), 4)
-        prix_stop_loss = round(prix_entree * (1 + STOP_PCT), 4)
+        prix_objectif  = round(prix_entree * (1 - pct_gain_cible), 4)
+        prix_stop_loss = round(prix_entree * (1 + pct_stop), 4)
 
-    gain_potentiel = round(mise * GAIN_RATIO, 2)
+    print(f"\n  {'='*50}")
+    print(f"  TRADE #{numero_trade} — {datetime.now().strftime('%H:%M:%S')}")
+    print(f"  {'='*50}")
+    print(f"  Symbole    : {symbole} ({direction})")
+    print(f"  Prix entree: {prix_entree}")
+    print(f"  Objectif   : {prix_objectif} -> +{GAIN_CIBLE}EUR")
+    print(f"  Stop-Loss  : {prix_stop_loss} -> {STOP_LOSS}EUR")
+    print(f"  Surveillance toutes les 30 secondes...")
 
-    print(f"\n  TRADE SIMULE OUVERT")
-    print(f"  Symbole      : {symbole}")
-    print(f"  Direction    : {direction}")
-    print(f"  Mise         : {mise}EUR (levier x{LEVIER} = {mise*LEVIER}EUR controles)")
-    print(f"  Prix entree  : {prix_entree}")
-    print(f"  Objectif     : {prix_objectif} (+{int(OBJECTIF_PCT*100)}% -> +{gain_potentiel}EUR)")
-    print(f"  Stop-Loss    : {prix_stop_loss} (-{int(STOP_PCT*100)}% -> -{mise}EUR)")
-    print(f"  Verification toutes les 5 minutes...\n")
-
-    debut   = time.time()
-    timeout = 24 * 3600  # 24h max
+    debut = time.time()
 
     while True:
-        time.sleep(300)  # 5 minutes
+        time.sleep(30)  # Vérification toutes les 30 secondes
 
         prix_actuel = get_prix_actuel(symbole)
         if prix_actuel is None:
             continue
 
-        heure = datetime.now().strftime("%H:%M:%S")
-        duree = int((time.time() - debut) / 60)
-
         # Calcul PnL actuel
         if direction == "ACHAT":
-            pnl_pct = (prix_actuel - prix_entree) / prix_entree * LEVIER * 100
+            pnl = round((prix_actuel - prix_entree) / prix_entree * MISE * LEVIER, 2)
         else:
-            pnl_pct = (prix_entree - prix_actuel) / prix_entree * LEVIER * 100
-        pnl_eur = round(mise * pnl_pct / 100, 2)
+            pnl = round((prix_entree - prix_actuel) / prix_entree * MISE * LEVIER, 2)
 
-        print(f"  [{heure}] {symbole}: {prix_actuel} | "
-              f"PnL: {'+' if pnl_eur >= 0 else ''}{pnl_eur}EUR ({'+' if pnl_pct >= 0 else ''}{round(pnl_pct,1)}%) | "
-              f"Objectif: {prix_objectif} | Stop: {prix_stop_loss} | {duree}min")
+        heure = datetime.now().strftime("%H:%M:%S")
+        duree = int((time.time() - debut) / 60)
+        print(f"  [{heure}] {symbole}: {prix_actuel} | PnL: {'+' if pnl >= 0 else ''}{pnl}EUR | {duree}min")
 
-        if direction == "ACHAT":
-            if prix_actuel >= prix_objectif:
-                print(f"\n  OBJECTIF ATTEINT ! +{gain_potentiel}EUR")
-                return "GAGNE", gain_potentiel
-            elif prix_actuel <= prix_stop_loss:
-                print(f"\n  STOP-LOSS ATTEINT ! -{mise}EUR")
-                return "PERDU", -mise
-        else:
-            if prix_actuel <= prix_objectif:
-                print(f"\n  OBJECTIF ATTEINT ! +{gain_potentiel}EUR")
-                return "GAGNE", gain_potentiel
-            elif prix_actuel >= prix_stop_loss:
-                print(f"\n  STOP-LOSS ATTEINT ! -{mise}EUR")
-                return "PERDU", -mise
+        # Objectif atteint ?
+        if pnl >= GAIN_CIBLE:
+            print(f"\n  OBJECTIF ATTEINT ! +{pnl}EUR")
+            return "GAGNE", pnl
 
-        # Timeout 24h
-        if time.time() - debut > timeout:
-            gain = round(mise * pnl_pct / 100, 2)
-            resultat = "GAGNE" if gain > 0 else "PERDU"
-            print(f"\n  TIMEOUT 24H — Fermeture : {'+' if gain >= 0 else ''}{gain}EUR")
-            return resultat, gain
+        # Stop-loss atteint ?
+        if pnl <= STOP_LOSS:
+            print(f"\n  STOP-LOSS ATTEINT ! {pnl}EUR")
+            return "PERDU", pnl
 
 # ══════════════════════════════════════════════════════════════
 # GESTION DE L'ÉTAT
@@ -244,13 +222,12 @@ def charger_etat():
         with open(FICHIER_ETAT, "r") as f:
             return json.load(f)
     return {
-        "mise_actuelle": MISE_DEPART,
-        "pertes_consecutives": 0,
-        "total_perdu": 0.0,
         "total_gagne": 0.0,
+        "total_perdu": 0.0,
         "cumul_net": 0.0,
-        "trade_du_jour_fait": False,
-        "date_dernier_trade": "",
+        "nb_trades": 0,
+        "nb_wins": 0,
+        "nb_losses": 0,
         "historique": []
     }
 
@@ -259,103 +236,17 @@ def sauvegarder_etat(etat):
         json.dump(etat, f, indent=2, ensure_ascii=False)
 
 def afficher_tableau_de_bord(etat):
-    print("\n" + "="*55)
-    print("  TABLEAU DE BORD")
-    print("="*55)
-    print(f"  Mise actuelle       : {etat['mise_actuelle']}EUR")
-    print(f"  Pertes consecutives : {etat['pertes_consecutives']}")
-    print(f"  Total gagne         : +{etat['total_gagne']}EUR")
-    print(f"  Total perdu         : -{etat['total_perdu']}EUR")
-    print(f"  Benefice net        : {'+' if etat['cumul_net'] >= 0 else ''}{round(etat['cumul_net'], 2)}EUR")
-    print(f"  Dernier trade       : {etat['date_dernier_trade'] or 'Aucun'}")
-    if etat["historique"]:
-        print(f"\n  Derniers trades :")
-        for h in etat["historique"][-5:]:
-            icone = "OK" if h["resultat"] == "GAGNE" else "XX"
-            print(f"    [{icone}] {h['date']} | {h['marche']} | {h['mise']}EUR | "
-                  f"{h['resultat']} | {'+' if h['gain'] >= 0 else ''}{h['gain']}EUR | "
-                  f"Cumul: {'+' if h['cumul'] >= 0 else ''}{h['cumul']}EUR")
-    print("="*55)
-
-def calculer_prochaine_mise(etat, resultat):
-    if resultat == "GAGNE":
-        etat["mise_actuelle"]        = MISE_DEPART
-        etat["pertes_consecutives"]  = 0
-        print(f"\n  GAGNE ! Retour a {MISE_DEPART}EUR demain")
-    else:
-        prochaine = etat["mise_actuelle"] * 2
-        etat["pertes_consecutives"] += 1
-        print(f"\n  PERDU. Mise doublee : {prochaine}EUR demain")
-        print(f"  ({etat['pertes_consecutives']} perte(s) consecutive(s))")
-        etat["mise_actuelle"] = prochaine
-    return etat
-
-# ══════════════════════════════════════════════════════════════
-# TRADE DU JOUR
-# ══════════════════════════════════════════════════════════════
-
-def trade_du_jour():
-    print("\n" + "█"*55)
-    print("█  TRADE DU JOUR — SIMULATION")
-    print(f"█  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("█"*55)
-
-    etat = charger_etat()
-    afficher_tableau_de_bord(etat)
-
-    aujourd_hui = datetime.now().strftime("%Y-%m-%d")
-    if etat["trade_du_jour_fait"] and etat["date_dernier_trade"] == aujourd_hui:
-        print("\n  Trade du jour deja effectue. On attend demain.")
-        return
-
-    mise = etat["mise_actuelle"]
-    print(f"\n  Mise du jour    : {mise}EUR")
-    print(f"  Gain potentiel  : +{round(mise*GAIN_RATIO,2)}EUR")
-    print(f"  Perte potentiel : -{mise}EUR")
-
-    symbole, direction, details = choisir_meilleur_marche()
-
-    if direction == "NEUTRE":
-        print("  Aucun signal clair. On passe cette journee.")
-        return
-
-    etat["trade_du_jour_fait"] = True
-    etat["date_dernier_trade"] = aujourd_hui
-    sauvegarder_etat(etat)
-
-    resultat, gain_perte = simuler_trade(symbole, direction, mise)
-
-    if resultat == "GAGNE":
-        etat["total_gagne"] += abs(gain_perte)
-    else:
-        etat["total_perdu"] += abs(gain_perte)
-
-    etat["cumul_net"] = round(etat["total_gagne"] - etat["total_perdu"], 2)
-    etat["historique"].append({
-        "date":      aujourd_hui,
-        "marche":    symbole,
-        "mise":      mise,
-        "resultat":  resultat,
-        "gain":      round(gain_perte, 2),
-        "cumul":     etat["cumul_net"],
-        "direction": direction
-    })
-
-    etat = calculer_prochaine_mise(etat, resultat)
-    etat["trade_du_jour_fait"] = False
-    sauvegarder_etat(etat)
-
-    print("\n" + "="*55)
-    print("  RESUME DU TRADE")
-    print("="*55)
-    print(f"  Marche    : {symbole}")
-    print(f"  Direction : {direction}")
-    print(f"  Mise      : {mise}EUR")
-    print(f"  Resultat  : {'GAGNE' if resultat == 'GAGNE' else 'PERDU'}")
-    print(f"  Gain/Perte: {'+' if gain_perte >= 0 else ''}{round(gain_perte, 2)}EUR")
-    print(f"  Cumul net : {'+' if etat['cumul_net'] >= 0 else ''}{etat['cumul_net']}EUR")
-    print(f"  Mise demain: {etat['mise_actuelle']}EUR")
-    print("="*55)
+    win_rate = (etat["nb_wins"] / etat["nb_trades"] * 100) if etat["nb_trades"] > 0 else 0
+    print(f"\n  {'='*55}")
+    print(f"  TABLEAU DE BORD")
+    print(f"  {'='*55}")
+    print(f"  Trades total  : {etat['nb_trades']}")
+    print(f"  Victoires     : {etat['nb_wins']} ({win_rate:.1f}%)")
+    print(f"  Defaites      : {etat['nb_losses']}")
+    print(f"  Total gagne   : +{round(etat['total_gagne'], 2)}EUR")
+    print(f"  Total perdu   : -{round(etat['total_perdu'], 2)}EUR")
+    print(f"  BENEFICE NET  : {'+' if etat['cumul_net'] >= 0 else ''}{round(etat['cumul_net'], 2)}EUR")
+    print(f"  {'='*55}")
 
 # ══════════════════════════════════════════════════════════════
 # BOUCLE PRINCIPALE
@@ -363,10 +254,49 @@ def trade_du_jour():
 
 def demarrer_bot():
     print(f"\n  DEMARRAGE — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    etat = charger_etat()
+    afficher_tableau_de_bord(etat)
 
     while True:
         try:
-            trade_du_jour()
+            etat["nb_trades"] += 1
+            symbole, direction, details = choisir_meilleur_marche()
+
+            if direction == "NEUTRE":
+                print("  Aucun signal. Nouvelle analyse dans 10 minutes...")
+                time.sleep(PAUSE_ENTRE_TRADES)
+                continue
+
+            resultat, gain = simuler_trade(symbole, direction, etat["nb_trades"])
+
+            if resultat == "ERREUR":
+                print("  Erreur trade. Nouvelle tentative dans 10 minutes...")
+                time.sleep(PAUSE_ENTRE_TRADES)
+                continue
+
+            # Mise à jour stats
+            if resultat == "GAGNE":
+                etat["nb_wins"]    += 1
+                etat["total_gagne"] = round(etat["total_gagne"] + gain, 2)
+            else:
+                etat["nb_losses"]   += 1
+                etat["total_perdu"] = round(etat["total_perdu"] + abs(gain), 2)
+
+            etat["cumul_net"] = round(etat["total_gagne"] - etat["total_perdu"], 2)
+            etat["historique"].append({
+                "heure":    datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "marche":   symbole,
+                "direction": direction,
+                "resultat": resultat,
+                "gain":     round(gain, 2),
+                "cumul":    etat["cumul_net"]
+            })
+            sauvegarder_etat(etat)
+            afficher_tableau_de_bord(etat)
+
+            print(f"\n  Pause de 10 minutes avant le prochain trade...")
+            time.sleep(PAUSE_ENTRE_TRADES)
+
         except KeyboardInterrupt:
             print("\n  Bot arrete.")
             break
@@ -374,10 +304,6 @@ def demarrer_bot():
             print(f"\n  Erreur : {e}")
             print("  Nouvelle tentative dans 5 minutes...")
             time.sleep(300)
-            continue
-
-        print(f"\n  Prochaine verification dans 1 heure...")
-        time.sleep(3600)
 
 if __name__ == "__main__":
     demarrer_bot()
