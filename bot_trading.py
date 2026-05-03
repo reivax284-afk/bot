@@ -21,7 +21,7 @@ LEVIER            = 3
 GAIN_CIBLE        = 1.50    # +1.50EUR
 STOP_LOSS         = -1.50   # -1.50EUR
 PAUSE             = 120     # 2 minutes entre trades
-SCORE_MIN         = 15      # Ne trade que si score > 15/30
+SCORE_MIN         = 10      # Ne trade que si score > 15/30
 MARCHES           = ["ETHUSDT", "SOLUSDT"]
 FICHIER_ETAT      = "etat_bot.json"
 
