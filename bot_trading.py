@@ -27,9 +27,9 @@ FICHIER_ETAT      = "etat_bot.json"
 
 KRAKEN_SYMBOLS = {
     "AVAXUSDT": "AVAXUSD",
-    "XRPUSDT": "XXRPZUSD",
+    "XRPUSDT": "XRPUSD",
     "ETHUSDT": "XETHZUSD",
-    "SOLUSDT": "SOLUSD"
+    "SOLUSDT": "SOLUSDT"
 }
 
 print("=" * 55)
@@ -350,5 +350,6 @@ def demarrer_bot():
 
 if __name__ == "__main__":
     demarrer_bot()
+
 
 
