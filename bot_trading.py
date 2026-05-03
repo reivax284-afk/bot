@@ -115,7 +115,7 @@ def calculer_volatilite(closes, highs, lows, periode=14):
 def scorer_marche(symbole):
     closes, highs, lows = get_klines(symbole)
     if closes is None:
-        print(f"    {symbole} : Erreur recuperation donnees")
+        print(f"    {symbole} : Erreur donnees Kraken — ignore")
         return 0, "NEUTRE", {}
 
     rsi        = calculer_rsi(closes)
@@ -340,3 +340,4 @@ def demarrer_bot():
 
 if __name__ == "__main__":
     demarrer_bot()
+
