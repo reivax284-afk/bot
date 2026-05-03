@@ -5,9 +5,9 @@ import time
 # === CONFIGURATION ===
 INITIAL_BET   = 5.0
 LEVERAGE      = 3
-OBJECTIF_PCT  = 0.05   # 5% de mouvement sur le prix = +15% sur la mise avec levier x3
+OBJECTIF_PCT  = 0.15   # 5% de mouvement sur le prix = +15% sur la mise avec levier x3
 GAIN_RATIO    = LEVERAGE * OBJECTIF_PCT   # = 0.15 soit +15% de la mise
-STOP_PCT      = 0.05   # Stop-loss symétrique à 5%
+STOP_PCT      = 0.15   # Stop-loss symétrique à 5%
 DAYS_BACKTEST = 90
 
 def get_klines_coingecko(coin_id, days=90):
