@@ -18,8 +18,8 @@ from datetime import datetime
 
 MISE              = 50.0
 LEVIER            = 3
-GAIN_CIBLE        = 1.50    # +1.50EUR
-STOP_LOSS         = -1.50   # -1.50EUR
+GAIN_CIBLE        = 1.0    # +1.50EUR
+STOP_LOSS         = -25.0   # -1.50EUR
 PAUSE             = 120     # 2 minutes entre trades
 SCORE_MIN         = 10      # Ne trade que si score > 15/30
 MARCHES           = ["ETHUSDT", "SOLUSDT", "AVAXUSDT"]
