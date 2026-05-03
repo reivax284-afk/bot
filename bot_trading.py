@@ -29,7 +29,7 @@ KRAKEN_SYMBOLS = {
     "AVAXUSDT": "AVAXUSD",
     "XRPUSDT": "XXRPZUSD",
     "ETHUSDT": "XETHZUSD",
-    "SOLUSDT": "SOLUSDT"
+    "SOLUSDT": "SOLUSD"
 }
 
 print("=" * 55)
