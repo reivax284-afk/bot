@@ -1,7 +1,8 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║       BOT SCALPING — SUIVI DE TENDANCE                      ║
-║       Seuil tendance 1% | Mise 50EUR | +0.10EUR / -25EUR    ║
+║       BOT SCALPING OPTIMISE — SIMULATION COMPLETE           ║
+║       Mise 50EUR | +1.50EUR = ferme | -1.50EUR = ferme      ║
+║       Pause 2min | Score min 15/30 | Kraken API             ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -17,27 +18,26 @@ from datetime import datetime
 
 MISE              = 50.0
 LEVIER            = 3
-GAIN_CIBLE        = 0.10    # +0.10EUR
-STOP_LOSS         = -25.0   # -25EUR
+GAIN_CIBLE        = 0.10    # +1.50EUR
+STOP_LOSS         = -25.0   # -1.50EUR
 PAUSE             = 120     # 2 minutes entre trades
-SEUIL_TENDANCE    = 1.0     # 1% de mouvement pour confirmer tendance
+SCORE_MIN         = 10      # Ne trade que si score > 15/30
 MARCHES           = ["ETHUSDT", "SOLUSDT", "XRPUSDT", "AVAXUSDT"]
 FICHIER_ETAT      = "etat_bot.json"
 
 KRAKEN_SYMBOLS = {
-    "ETHUSDT":  "XETHZUSD",
-    "SOLUSDT":  "SOLUSDT",
-    "XRPUSDT":  "XRPUSD",
-    "AVAXUSDT": "AVAXUSD"
+    "AVAXUSDT": "AVAXUSD",
+    "XRPUSDT": "XXRPZUSD",
+    "ETHUSDT": "XETHZUSD",
+    "SOLUSDT": "SOLUSD"
 }
 
 print("=" * 55)
-print("  BOT SCALPING — SUIVI DE TENDANCE")
-print(f"  Mise      : {MISE}EUR | Levier : x{LEVIER}")
-print(f"  Objectif  : +{GAIN_CIBLE}EUR | Stop : {STOP_LOSS}EUR")
-print(f"  Tendance  : seuil {SEUIL_TENDANCE}%")
-print(f"  Marches   : {', '.join(MARCHES)}")
-print(f"  Source    : Kraken API (sans restriction)")
+print("  BOT SCALPING OPTIMISE — SIMULATION")
+print(f"  Mise       : {MISE}EUR | Levier : x{LEVIER}")
+print(f"  Objectif   : +{GAIN_CIBLE}EUR | Stop : {STOP_LOSS}EUR")
+print(f"  Pause      : {PAUSE//60} min | Score min : {SCORE_MIN}/30")
+print(f"  Source     : Kraken API (sans restriction)")
 print("=" * 55)
 
 # ══════════════════════════════════════════════════════════════
@@ -50,8 +50,8 @@ def get_prix_actuel(symbole):
     try:
         r = requests.get(url, params={"pair": kraken_symbol}, timeout=10)
         data = r.json()
-        if data.get("error") and data["error"]:
-            print(f"  Erreur prix {symbole} : {data['error']}")
+        if data.get("error"):
+            print(f"  Erreur Kraken ticker : {data['error']}")
             return None
         result = data.get("result", {})
         key = list(result.keys())[0]
@@ -63,19 +63,24 @@ def get_prix_actuel(symbole):
 def get_klines(symbole, limite=50):
     kraken_symbol = KRAKEN_SYMBOLS.get(symbole, symbole)
     url = "https://api.kraken.com/0/public/OHLC"
-    params = {"pair": kraken_symbol, "interval": 1}
+    params = {"pair": kraken_symbol, "interval": 60}
     try:
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
         errors = data.get("error", [])
         if errors:
-            print(f"  Erreur klines {symbole} : {errors}")
+            print(f"  Erreur Kraken {symbole} : {errors}")
             return None, None, None
         result = data.get("result", {})
         keys = [k for k in result.keys() if k != "last"]
         if not keys:
+            print(f"  Pas de donnees pour {symbole}")
             return None, None, None
-        candles = result[keys[0]]
+        key = keys[0]
+        candles = result[key]
+        if not candles:
+            print(f"  Bougies vides pour {symbole}")
+            return None, None, None
         closes = [float(k[4]) for k in candles]
         highs  = [float(k[2]) for k in candles]
         lows   = [float(k[3]) for k in candles]
@@ -85,108 +90,102 @@ def get_klines(symbole, limite=50):
         return None, None, None
 
 # ══════════════════════════════════════════════════════════════
-# DÉTECTION DE TENDANCE (basée sur le mouvement réel du prix)
+# INDICATEURS TECHNIQUES
 # ══════════════════════════════════════════════════════════════
 
-def detecter_tendance(closes, highs, lows):
-    """
-    Détecte la tendance en regardant le mouvement réel du prix
-    sur les dernières bougies.
-    
-    - Si le prix a monté de +1% sur les 3 dernières bougies → HAUSSIERE → ACHAT
-    - Si le prix a baissé de -1% sur les 3 dernières bougies → BAISSIERE → VENTE
-    - Sinon → NEUTRE → on attend
-    """
-    if len(closes) < 6:
-        return "NEUTRE", 0
+def calculer_rsi(closes, periode=14):
+    if len(closes) < periode + 1:
+        return 50
+    gains, pertes = [], []
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i-1]
+        gains.append(max(diff, 0))
+        pertes.append(abs(min(diff, 0)))
+    moy_gain  = sum(gains[-periode:]) / periode
+    moy_perte = sum(pertes[-periode:]) / periode
+    if moy_perte == 0:
+        return 100
+    return round(100 - (100 / (1 + moy_gain / moy_perte)), 2)
 
-    # Mouvement sur les 3 dernières bougies
-    prix_actuel = closes[-1]
-    prix_3h_avant = closes[-4]
-    mouvement_3h = (prix_actuel - prix_3h_avant) / prix_3h_avant * 100
+def calculer_moyenne_mobile(closes, periode):
+    if len(closes) < periode:
+        return None
+    return sum(closes[-periode:]) / periode
 
-    # Mouvement sur la dernière bougie
-    prix_1h_avant = closes[-2]
-    mouvement_1h = (prix_actuel - prix_1h_avant) / prix_1h_avant * 100
+def calculer_volatilite(closes, highs, lows, periode=14):
+    if len(closes) < periode:
+        return 0
+    amplitudes = [(highs[i] - lows[i]) / closes[i] * 100 for i in range(-periode, 0)]
+    return round(sum(amplitudes) / len(amplitudes), 2)
 
-    # Amplitude (volatilité) de la dernière bougie
-    amplitude = (highs[-1] - lows[-1]) / closes[-1] * 100
+# ══════════════════════════════════════════════════════════════
+# SCORING ET CHOIX DU MARCHÉ
+# ══════════════════════════════════════════════════════════════
 
-    print(f"    Mouvement 3h: {round(mouvement_3h, 2)}% | "
-          f"Mouvement 1h: {round(mouvement_1h, 2)}% | "
-          f"Amplitude: {round(amplitude, 2)}%")
-
-    # Tendance haussière : mouvement 3h > +1% ET dernière bougie positive
-    if mouvement_3h >= SEUIL_TENDANCE and mouvement_1h >= 0:
-        return "HAUSSIERE", mouvement_3h
-
-    # Tendance baissière : mouvement 3h < -1% ET dernière bougie négative
-    elif mouvement_3h <= -SEUIL_TENDANCE and mouvement_1h <= 0:
-        return "BAISSIERE", mouvement_3h
-
-    # Marché flat
-    else:
-        return "NEUTRE", mouvement_3h
-
-def analyser_marche(symbole):
-    """
-    Analyse complète du marché.
-    Retourne : (score, direction, details)
-    """
+def scorer_marche(symbole):
     closes, highs, lows = get_klines(symbole)
     if closes is None:
-        print(f"  {symbole} : Erreur données")
+        print(f"    {symbole} : Erreur donnees Kraken — ignore")
         return 0, "NEUTRE", {}
 
-    tendance, mouvement = detecter_tendance(closes, highs, lows)
+    rsi        = calculer_rsi(closes)
+    ma_courte  = calculer_moyenne_mobile(closes, 10)
+    ma_longue  = calculer_moyenne_mobile(closes, 30)
+    volatilite = calculer_volatilite(closes, highs, lows)
 
-    if tendance == "HAUSSIERE":
-        direction = "ACHAT"
-        score = min(int(abs(mouvement) * 10), 30)  # Plus ça monte, plus le score est élevé
-    elif tendance == "BAISSIERE":
-        direction = "VENTE"
-        score = min(int(abs(mouvement) * 10), 30)
+    if rsi < 25:   score_rsi, direction = 10, "ACHAT"
+    elif rsi < 30: score_rsi, direction = 8,  "ACHAT"
+    elif rsi < 40: score_rsi, direction = 5,  "ACHAT"
+    elif rsi > 75: score_rsi, direction = 10, "VENTE"
+    elif rsi > 70: score_rsi, direction = 8,  "VENTE"
+    elif rsi > 60: score_rsi, direction = 5,  "VENTE"
+    else:          score_rsi, direction = 2,  "NEUTRE"
+
+    if ma_courte and ma_longue:
+        ecart        = abs(ma_courte - ma_longue) / ma_longue * 100
+        direction_ma = "ACHAT" if ma_courte > ma_longue else "VENTE"
+        if ecart > 2:     score_ma = 10
+        elif ecart > 1:   score_ma = 7
+        elif ecart > 0.5: score_ma = 4
+        else:             score_ma = 1
     else:
-        direction = "NEUTRE"
-        score = 0
+        score_ma, direction_ma = 0, "NEUTRE"
 
-    print(f"  {symbole} : score {score}/30 | "
-          f"Tendance {tendance} | {direction}")
+    if volatilite > 3:     score_vol = 10
+    elif volatilite > 2:   score_vol = 8
+    elif volatilite > 1:   score_vol = 5
+    elif volatilite > 0.5: score_vol = 3
+    else:                  score_vol = 1
 
-    return score, direction, {
-        "tendance": tendance,
-        "mouvement": mouvement,
-        "score": score,
-        "direction": direction
+    score_total = score_rsi + score_ma + score_vol
+    if direction == "NEUTRE":
+        direction = direction_ma
+
+    return score_total, direction, {
+        "rsi": rsi, "score_total": score_total,
+        "volatilite": volatilite, "direction": direction
     }
 
 def choisir_meilleur_marche():
     print(f"\n  [{datetime.now().strftime('%H:%M:%S')}] Analyse des marches...")
     resultats = {}
-
     for marche in MARCHES:
-        score, direction, details = analyser_marche(marche)
-        resultats[marche] = {
-            "score": score,
-            "direction": direction,
-            "details": details
-        }
+        score, direction, details = scorer_marche(marche)
+        resultats[marche] = {"score": score, "direction": direction, "details": details}
+        print(f"    {marche} : score {score}/30 | RSI {details.get('rsi','?')} | "
+              f"Vol {details.get('volatilite','?')}% | {direction}")
         time.sleep(1)
 
-    # Filtre : on ne garde que les marchés avec une vraie tendance
-    valides = {k: v for k, v in resultats.items() if v["direction"] != "NEUTRE" and v["score"] > 0}
+    meilleur  = max(resultats, key=lambda x: resultats[x]["score"])
+    score     = resultats[meilleur]["score"]
+    direction = resultats[meilleur]["direction"]
 
-    if not valides:
-        print("  => Aucune tendance claire. On attend...")
+    if score < SCORE_MIN:
+        print(f"  => Signal trop faible ({score}/30 < {SCORE_MIN}/30). On attend...")
         return None, "NEUTRE", {}
 
-    # On choisit le marché avec le mouvement le plus fort
-    meilleur = max(valides, key=lambda x: valides[x]["score"])
-    direction = valides[meilleur]["direction"]
-    score = valides[meilleur]["score"]
-
-    print(f"\n  => CHOIX : {meilleur} ({direction}) — Score {score}/30 ✅")
-    return meilleur, direction, valides[meilleur]["details"]
+    print(f"  => CHOIX : {meilleur} ({direction}) — Score {score}/30 ✅")
+    return meilleur, direction, resultats[meilleur]["details"]
 
 # ══════════════════════════════════════════════════════════════
 # SIMULATION DU TRADE
@@ -214,7 +213,7 @@ def simuler_trade(symbole, direction, numero_trade):
     print(f"  Prix entree: {prix_entree}")
     print(f"  Objectif   : {prix_objectif} -> +{GAIN_CIBLE}EUR")
     print(f"  Stop-Loss  : {prix_stop_loss} -> {STOP_LOSS}EUR")
-    print(f"  Mouvement  : {round(pct_gain*100, 3)}%\n")
+    print(f"  Mouvement necessaire : {round(pct_gain*100, 3)}%\n")
 
     debut = time.time()
 
@@ -278,7 +277,7 @@ def afficher_tableau_de_bord(etat):
     print(f"  Trades total  : {etat['nb_trades']}")
     print(f"  Victoires     : {etat['nb_wins']} ({win_rate:.1f}%)")
     print(f"  Defaites      : {etat['nb_losses']}")
-    print(f"  Signaux sautes: {etat['nb_skips']}")
+    print(f"  Signaux sautes: {etat['nb_skips']} (score < {SCORE_MIN})")
     print(f"  Total gagne   : +{round(etat['total_gagne'], 2)}EUR")
     print(f"  Total perdu   : -{round(etat['total_perdu'], 2)}EUR")
     print(f"  BENEFICE NET  : {'+' if etat['cumul_net'] >= 0 else ''}{round(etat['cumul_net'], 2)}EUR")
@@ -287,8 +286,7 @@ def afficher_tableau_de_bord(etat):
         for h in etat["historique"][-5:]:
             icone = "OK" if h["resultat"] == "GAGNE" else "XX"
             print(f"    [{icone}] {h['heure']} | {h['marche']} | "
-                  f"{h['direction']} | {h['resultat']} | "
-                  f"{'+' if h['gain'] >= 0 else ''}{h['gain']}EUR | "
+                  f"{h['resultat']} | {'+' if h['gain'] >= 0 else ''}{h['gain']}EUR | "
                   f"Cumul: {'+' if h['cumul'] >= 0 else ''}{h['cumul']}EUR")
     print(f"  {'='*55}")
 
@@ -352,3 +350,5 @@ def demarrer_bot():
 
 if __name__ == "__main__":
     demarrer_bot()
+
+
