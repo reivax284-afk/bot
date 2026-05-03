@@ -1,8 +1,8 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║       BOT SCALPING — SIMULATION COMPLETE                    ║
-║       Source prix : Kraken (sans restriction)               ║
-║       Mise fixe 50EUR | +0.10EUR = ferme | -25EUR = ferme   ║
+║       BOT SCALPING OPTIMISE — SIMULATION COMPLETE           ║
+║       Mise 50EUR | +1.50EUR = ferme | -1.50EUR = ferme      ║
+║       Pause 2min | Score min 15/30 | Kraken API             ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -18,9 +18,10 @@ from datetime import datetime
 
 MISE              = 50.0
 LEVIER            = 3
-GAIN_CIBLE        = 0.10   # +0.10EUR
-STOP_LOSS         = -25.0  # -25EUR
-PAUSE             = 600    # 10 minutes entre trades
+GAIN_CIBLE        = 1.50    # +1.50EUR
+STOP_LOSS         = -1.50   # -1.50EUR
+PAUSE             = 120     # 2 minutes entre trades
+SCORE_MIN         = 15      # Ne trade que si score > 15/30
 MARCHES           = ["SOLUSDT"]
 FICHIER_ETAT      = "etat_bot.json"
 
@@ -30,10 +31,10 @@ KRAKEN_SYMBOLS = {
 }
 
 print("=" * 55)
-print("  BOT SCALPING — SIMULATION COMPLETE")
-print(f"  Mise fixe  : {MISE}EUR | Levier : x{LEVIER}")
+print("  BOT SCALPING OPTIMISE — SIMULATION")
+print(f"  Mise       : {MISE}EUR | Levier : x{LEVIER}")
 print(f"  Objectif   : +{GAIN_CIBLE}EUR | Stop : {STOP_LOSS}EUR")
-print(f"  Pause      : {PAUSE//60} minutes entre chaque trade")
+print(f"  Pause      : {PAUSE//60} min | Score min : {SCORE_MIN}/30")
 print(f"  Source     : Kraken API (sans restriction)")
 print("=" * 55)
 
@@ -48,12 +49,11 @@ def get_prix_actuel(symbole):
         r = requests.get(url, params={"pair": kraken_symbol}, timeout=10)
         data = r.json()
         if data.get("error"):
-            print(f"  Erreur Kraken : {data['error']}")
+            print(f"  Erreur Kraken ticker : {data['error']}")
             return None
         result = data.get("result", {})
         key = list(result.keys())[0]
-        prix = float(result[key]["c"][0])  # "c" = dernier prix
-        return prix
+        return float(result[key]["c"][0])
     except Exception as e:
         print(f"  Erreur prix {symbole} : {e}")
         return None
@@ -61,7 +61,7 @@ def get_prix_actuel(symbole):
 def get_klines(symbole, limite=50):
     kraken_symbol = KRAKEN_SYMBOLS.get(symbole, symbole)
     url = "https://api.kraken.com/0/public/OHLC"
-    params = {"pair": kraken_symbol, "interval": 60}  # bougies 1h
+    params = {"pair": kraken_symbol, "interval": 60}
     try:
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
@@ -150,20 +150,29 @@ def scorer_marche(symbole):
         direction = direction_ma
 
     return score_total, direction, {
-        "rsi": rsi, "score_total": score_total, "direction": direction
+        "rsi": rsi, "score_total": score_total,
+        "volatilite": volatilite, "direction": direction
     }
 
 def choisir_meilleur_marche():
-    print("\n  Analyse des marches...")
+    print(f"\n  [{datetime.now().strftime('%H:%M:%S')}] Analyse des marches...")
     resultats = {}
     for marche in MARCHES:
         score, direction, details = scorer_marche(marche)
         resultats[marche] = {"score": score, "direction": direction, "details": details}
-        print(f"    {marche} : score {score}/30 ({direction})")
+        print(f"    {marche} : score {score}/30 | RSI {details.get('rsi','?')} | "
+              f"Vol {details.get('volatilite','?')}% | {direction}")
         time.sleep(1)
+
     meilleur  = max(resultats, key=lambda x: resultats[x]["score"])
+    score     = resultats[meilleur]["score"]
     direction = resultats[meilleur]["direction"]
-    print(f"  => CHOIX : {meilleur} ({direction})")
+
+    if score < SCORE_MIN:
+        print(f"  => Signal trop faible ({score}/30 < {SCORE_MIN}/30). On attend...")
+        return None, "NEUTRE", {}
+
+    print(f"  => CHOIX : {meilleur} ({direction}) — Score {score}/30 ✅")
     return meilleur, direction, resultats[meilleur]["details"]
 
 # ══════════════════════════════════════════════════════════════
@@ -175,14 +184,14 @@ def simuler_trade(symbole, direction, numero_trade):
     if prix_entree is None:
         return "ERREUR", 0
 
-    pct_gain_cible = GAIN_CIBLE / (MISE * LEVIER)
-    pct_stop       = abs(STOP_LOSS) / (MISE * LEVIER)
+    pct_gain = GAIN_CIBLE / (MISE * LEVIER)
+    pct_stop = abs(STOP_LOSS) / (MISE * LEVIER)
 
     if direction == "ACHAT":
-        prix_objectif  = round(prix_entree * (1 + pct_gain_cible), 4)
+        prix_objectif  = round(prix_entree * (1 + pct_gain), 4)
         prix_stop_loss = round(prix_entree * (1 - pct_stop), 4)
     else:
-        prix_objectif  = round(prix_entree * (1 - pct_gain_cible), 4)
+        prix_objectif  = round(prix_entree * (1 - pct_gain), 4)
         prix_stop_loss = round(prix_entree * (1 + pct_stop), 4)
 
     print(f"\n  {'='*50}")
@@ -192,12 +201,12 @@ def simuler_trade(symbole, direction, numero_trade):
     print(f"  Prix entree: {prix_entree}")
     print(f"  Objectif   : {prix_objectif} -> +{GAIN_CIBLE}EUR")
     print(f"  Stop-Loss  : {prix_stop_loss} -> {STOP_LOSS}EUR")
-    print(f"  Surveillance toutes les 60 secondes...\n")
+    print(f"  Mouvement necessaire : {round(pct_gain*100, 3)}%\n")
 
     debut = time.time()
 
     while True:
-        time.sleep(60)
+        time.sleep(30)
 
         prix_actuel = get_prix_actuel(symbole)
         if prix_actuel is None:
@@ -221,7 +230,6 @@ def simuler_trade(symbole, direction, numero_trade):
             print(f"\n  STOP-LOSS ATTEINT ! {pnl}EUR")
             return "PERDU", pnl
 
-        # Timeout 24h
         if time.time() - debut > 86400:
             print(f"\n  TIMEOUT 24H — Fermeture : {'+' if pnl >= 0 else ''}{pnl}EUR")
             return ("GAGNE" if pnl > 0 else "PERDU"), pnl
@@ -241,6 +249,7 @@ def charger_etat():
         "nb_trades": 0,
         "nb_wins": 0,
         "nb_losses": 0,
+        "nb_skips": 0,
         "historique": []
     }
 
@@ -256,6 +265,7 @@ def afficher_tableau_de_bord(etat):
     print(f"  Trades total  : {etat['nb_trades']}")
     print(f"  Victoires     : {etat['nb_wins']} ({win_rate:.1f}%)")
     print(f"  Defaites      : {etat['nb_losses']}")
+    print(f"  Signaux sautes: {etat['nb_skips']} (score < {SCORE_MIN})")
     print(f"  Total gagne   : +{round(etat['total_gagne'], 2)}EUR")
     print(f"  Total perdu   : -{round(etat['total_perdu'], 2)}EUR")
     print(f"  BENEFICE NET  : {'+' if etat['cumul_net'] >= 0 else ''}{round(etat['cumul_net'], 2)}EUR")
@@ -279,19 +289,21 @@ def demarrer_bot():
 
     while True:
         try:
-            etat["nb_trades"] += 1
             symbole, direction, details = choisir_meilleur_marche()
 
-            if direction == "NEUTRE":
-                print("  Aucun signal. Nouvelle analyse dans 10 minutes...")
+            if direction == "NEUTRE" or symbole is None:
+                etat["nb_skips"] += 1
+                sauvegarder_etat(etat)
+                print(f"  Nouvelle analyse dans 2 minutes...")
                 time.sleep(PAUSE)
                 continue
 
+            etat["nb_trades"] += 1
             resultat, gain = simuler_trade(symbole, direction, etat["nb_trades"])
 
             if resultat == "ERREUR":
-                print("  Erreur trade. Nouvelle tentative dans 10 minutes...")
                 etat["nb_trades"] -= 1
+                print("  Erreur. Nouvelle tentative dans 2 minutes...")
                 time.sleep(PAUSE)
                 continue
 
@@ -314,7 +326,7 @@ def demarrer_bot():
             sauvegarder_etat(etat)
             afficher_tableau_de_bord(etat)
 
-            print(f"\n  Pause de 10 minutes avant le prochain trade...")
+            print(f"\n  Pause de 2 minutes avant le prochain trade...")
             time.sleep(PAUSE)
 
         except KeyboardInterrupt:
@@ -322,7 +334,7 @@ def demarrer_bot():
             break
         except Exception as e:
             print(f"\n  Erreur : {e}")
-            time.sleep(300)
+            time.sleep(60)
 
 if __name__ == "__main__":
     demarrer_bot()
