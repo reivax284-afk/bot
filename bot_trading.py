@@ -22,7 +22,7 @@ GAIN_CIBLE        = 1.50    # +1.50EUR
 STOP_LOSS         = -1.50   # -1.50EUR
 PAUSE             = 120     # 2 minutes entre trades
 SCORE_MIN         = 15      # Ne trade que si score > 15/30
-MARCHES           = ["SOLUSDT"]
+MARCHES           = ["ETHUSDT", "SOLUSDT"]
 FICHIER_ETAT      = "etat_bot.json"
 
 KRAKEN_SYMBOLS = {
