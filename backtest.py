@@ -1,82 +1,90 @@
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 
 # === CONFIGURATION ===
-INITIAL_BET   = 5.0
-LEVERAGE      = 3
-OBJECTIF_PCT  = 0.15   # 5% de mouvement sur le prix = +15% sur la mise avec levier x3
-GAIN_RATIO    = LEVERAGE * OBJECTIF_PCT   # = 0.15 soit +15% de la mise
-STOP_PCT      = 0.15   # Stop-loss symétrique à 5%
-DAYS_BACKTEST = 90
+INITIAL_BET  = 5.0
+LEVERAGE     = 3
+OBJECTIF_PCT = 0.15   # 15% de mouvement
+STOP_PCT     = 0.15   # Stop-loss 15%
+GAIN_RATIO   = LEVERAGE * OBJECTIF_PCT  # 0.45 = +45% de la mise si gagné
+DAYS         = 365
 
-def get_klines_coingecko(coin_id, days=90):
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
-    params = {"vs_currency": "usd", "days": str(days)}
+KRAKEN_SYMBOLS = {
+    "ETH/USDT": "XETHZUSD",
+    "SOL/USDT": "SOLUSDT"
+}
+
+def get_klines_kraken(symbol, days=92):
+    """Récupère les bougies journalières depuis Kraken (gratuit, sans restriction)"""
+    url = "https://api.kraken.com/0/public/OHLC"
+    since = int((datetime.now() - timedelta(days=days+1)).timestamp())
+    params = {
+        "pair": symbol,
+        "interval": 1440,  # 1440 minutes = 1 jour
+        "since": since
+    }
     try:
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
-        seen = set()
-        daily = []
-        for item in data:
-            day = datetime.fromtimestamp(item[0]/1000).strftime("%Y-%m-%d")
-            if day not in seen:
-                seen.add(day)
-                daily.append({
-                    "open_time": item[0],
-                    "open":  float(item[1]),
-                    "high":  float(item[2]),
-                    "low":   float(item[3]),
-                    "close": float(item[4]),
-                })
-        return daily[-days:]
+        if data.get("error"):
+            print(f"  Erreur Kraken : {data['error']}")
+            return []
+        result = data.get("result", {})
+        # Kraken retourne les données sous la clé du symbole (parfois différent)
+        key = list(result.keys())[0] if result else None
+        if not key or key == "last":
+            print(f"  Pas de données pour {symbol}")
+            return []
+        candles = []
+        for k in result[key]:
+            candles.append({
+                "open_time": int(k[0]) * 1000,
+                "open":  float(k[1]),
+                "high":  float(k[2]),
+                "low":   float(k[3]),
+                "close": float(k[4]),
+            })
+        return candles[-days:]
     except Exception as e:
-        print(f"Erreur CoinGecko ({coin_id}): {e}")
+        print(f"  Erreur Kraken ({symbol}): {e}")
         return []
 
 def simulate_trade(candle, bet, direction):
-    """
-    Simule un trade avec objectif 5% et stop-loss 5%.
-    On regarde si le high/low de la bougie a atteint l'objectif ou le stop.
-    """
     open_price = candle["open"]
     high       = candle["high"]
     low        = candle["low"]
+    close      = candle["close"]
 
     if direction == "LONG":
-        prix_objectif  = open_price * (1 + OBJECTIF_PCT)
-        prix_stop      = open_price * (1 - STOP_PCT)
-        # Si le high atteint l'objectif → gagné
+        prix_objectif = open_price * (1 + OBJECTIF_PCT)
+        prix_stop     = open_price * (1 - STOP_PCT)
         if high >= prix_objectif:
-            gain = round(bet * GAIN_RATIO, 2)
-            return "GAGNE", gain
-        # Si le low atteint le stop → perdu
+            return "GAGNE", round(bet * GAIN_RATIO, 2)
         elif low <= prix_stop:
             return "PERDU", -bet
         else:
-            # Ni l'un ni l'autre → on ferme au close
-            pnl = (candle["close"] - open_price) / open_price * LEVERAGE
+            pnl = (close - open_price) / open_price * LEVERAGE
             gain = round(bet * pnl, 2)
             return ("GAGNE" if gain > 0 else "PERDU"), gain
     else:  # SHORT
-        prix_objectif  = open_price * (1 - OBJECTIF_PCT)
-        prix_stop      = open_price * (1 + STOP_PCT)
+        prix_objectif = open_price * (1 - OBJECTIF_PCT)
+        prix_stop     = open_price * (1 + STOP_PCT)
         if low <= prix_objectif:
-            gain = round(bet * GAIN_RATIO, 2)
-            return "GAGNE", gain
+            return "GAGNE", round(bet * GAIN_RATIO, 2)
         elif high >= prix_stop:
             return "PERDU", -bet
         else:
-            pnl = (open_price - candle["close"]) / open_price * LEVERAGE
+            pnl = (open_price - close) / open_price * LEVERAGE
             gain = round(bet * pnl, 2)
             return ("GAGNE" if gain > 0 else "PERDU"), gain
 
 def run_backtest(symbol_name, candles):
-    print(f"\n{'='*62}")
-    print(f"  BACKTEST REALISTE — {symbol_name}")
+    print(f"\n{'='*65}")
+    print(f"  BACKTEST — {symbol_name}")
     print(f"  Mise: {INITIAL_BET}EUR | Levier: x{LEVERAGE} | Objectif: +{int(OBJECTIF_PCT*100)}% | Stop: -{int(STOP_PCT*100)}%")
-    print(f"  Gain si gagne : +{round(INITIAL_BET*GAIN_RATIO,2)}EUR | Perte si perdu : -{INITIAL_BET}EUR")
-    print(f"{'='*62}")
+    print(f"  Gain si gagne: +{round(INITIAL_BET*GAIN_RATIO,2)}EUR | Perte si perdu: -{INITIAL_BET}EUR")
+    print(f"{'='*65}")
 
     bet = INITIAL_BET
     total_profit = 0.0
@@ -87,13 +95,9 @@ def run_backtest(symbol_name, candles):
     consecutive_losses = 0
 
     for i, candle in enumerate(candles):
-        date = datetime.fromtimestamp(candle["open_time"]/1000).strftime("%Y-%m-%d")
-
-        # Direction : on suit la tendance (close vs open)
+        date      = datetime.fromtimestamp(candle["open_time"]/1000).strftime("%Y-%m-%d")
         direction = "LONG" if candle["close"] >= candle["open"] else "SHORT"
-
         resultat, gain = simulate_trade(candle, bet, direction)
-
         total_profit += gain
 
         if resultat == "GAGNE":
@@ -115,9 +119,9 @@ def run_backtest(symbol_name, candles):
         bet = next_bet
 
     win_rate = wins / len(candles) * 100 if candles else 0
-    print(f"\n{'='*62}")
+    print(f"\n{'='*65}")
     print(f"  RESUME — {symbol_name}")
-    print(f"{'='*62}")
+    print(f"{'='*65}")
     print(f"  Jours trades            : {len(candles)}")
     print(f"  Victoires               : {wins} ({win_rate:.1f}%)")
     print(f"  Defaites                : {losses} ({100-win_rate:.1f}%)")
@@ -125,25 +129,24 @@ def run_backtest(symbol_name, candles):
     print(f"  Mise maximale atteinte  : {max_bet:.2f} EUR")
     print(f"  Pertes consecutives max : {max_consecutive_losses}")
     print(f"  Capital min recommande  : {max_bet * 2:.2f} EUR")
-    print(f"{'='*62}\n")
+    print(f"{'='*65}\n")
 
 def main():
-    print("="*62)
-    print("  BACKTEST REALISTE — OBJECTIF 5% | STOP 5%")
+    print("="*65)
+    print("  BACKTEST MARTINGALE — KRAKEN API — 365 JOURS REELS")
+    print(f"  Objectif: 15% | Stop: 15% | Levier: x3 | Mise: {INITIAL_BET}EUR")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("="*62)
+    print("="*65)
 
-    eth = get_klines_coingecko("ethereum", DAYS_BACKTEST)
-    if eth:
-        print(f"\n  OK : {len(eth)} bougies ETH")
-        run_backtest("ETH/USDT", eth)
-
-    time.sleep(2)
-
-    sol = get_klines_coingecko("solana", DAYS_BACKTEST)
-    if sol:
-        print(f"\n  OK : {len(sol)} bougies SOL")
-        run_backtest("SOL/USDT", sol)
+    for symbol_name, kraken_symbol in KRAKEN_SYMBOLS.items():
+        print(f"\n  Recuperation {symbol_name} depuis Kraken...")
+        candles = get_klines_kraken(kraken_symbol, DAYS)
+        if candles:
+            print(f"  OK : {len(candles)} bougies journalieres recuperees")
+            run_backtest(symbol_name, candles)
+        else:
+            print(f"  ERREUR : Impossible de recuperer {symbol_name}")
+        time.sleep(1)
 
     print("  Backtest termine !")
 
