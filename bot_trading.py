@@ -187,7 +187,7 @@ def simuler_trade(symbole, direction, numero_trade):
     debut = time.time()
 
     while True:
-        time.sleep(30)  # Vérification toutes les 30 secondes
+        time.sleep(60)  # Vérification toutes les 30 secondes
 
         prix_actuel = get_prix_actuel(symbole)
         if prix_actuel is None:
