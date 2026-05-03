@@ -63,7 +63,7 @@ def get_prix_actuel(symbole):
 def get_klines(symbole, limite=50):
     kraken_symbol = KRAKEN_SYMBOLS.get(symbole, symbole)
     url = "https://api.kraken.com/0/public/OHLC"
-    params = {"pair": kraken_symbol, "interval": 60}
+    params = {"pair": kraken_symbol, "interval": 5}
     try:
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
