@@ -1,7 +1,7 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
 ║       BOT MARTINGALE — MODE SIMULATION COMPLÈTE             ║
-║       Pas besoin de Binance · Trades simulés en local       ║
+║       Objectif 15% | Stop 15% | Levier x3                  ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -15,24 +15,23 @@ from datetime import datetime
 # CONFIGURATION
 # ══════════════════════════════════════════════════════════════
 
-MISE_DEPART  = float(os.environ.get("MISE_DEPART", "5.0"))
+MISE_DEPART  = float(os.environ.get("MISE_DEPART", "50.0"))
 LEVIER       = int(os.environ.get("LEVIER", "3"))
+OBJECTIF_PCT = 0.15   # 15% de mouvement sur le prix
+STOP_PCT     = 0.15   # Stop-loss 15%
+GAIN_RATIO   = LEVIER * OBJECTIF_PCT  # 0.45 = +45% de la mise si gagné
 MARCHES      = ["ETHUSDT", "SOLUSDT"]
 FICHIER_ETAT = "etat_bot.json"
-
-# Objectif : tripler la mise avec levier x3
-# Mouvement nécessaire sur le prix : +33% (x3 avec levier x3)
-OBJECTIF_PCT    = 0.333   # +33.3% de mouvement
-STOP_LOSS_PCT   = 0.333   # -33.3% = perte totale de la mise
 
 print("=" * 55)
 print("  BOT MARTINGALE — SIMULATION COMPLETE")
 print(f"  Mise depart : {MISE_DEPART}EUR | Levier : x{LEVIER}")
-print(f"  Source prix : CoinGecko (sans restriction)")
+print(f"  Objectif    : +{int(OBJECTIF_PCT*100)}% | Stop : -{int(STOP_PCT*100)}%")
+print(f"  Gain/trade  : +{round(MISE_DEPART*GAIN_RATIO,2)}EUR | Perte : -{MISE_DEPART}EUR")
 print("=" * 55)
 
 # ══════════════════════════════════════════════════════════════
-# RÉCUPÉRATION DES PRIX VIA COINGECKO (sans restriction geo)
+# RÉCUPÉRATION DES PRIX VIA COINGECKO
 # ══════════════════════════════════════════════════════════════
 
 COINGECKO_IDS = {
@@ -40,18 +39,14 @@ COINGECKO_IDS = {
     "SOLUSDT": "solana"
 }
 
-def get_klines_coingecko(symbole, limite=100):
-    """Récupère les bougies horaires via CoinGecko"""
+def get_klines(symbole, limite=50):
     coin_id = COINGECKO_IDS.get(symbole)
-    if not coin_id:
-        return None, None, None
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
-    params = {"vs_currency": "usd", "days": "7"}  # 7 jours = bougies de 4h
+    params = {"vs_currency": "usd", "days": "7"}
     try:
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
-        if not isinstance(data, list) or len(data) == 0:
-            print(f"  Erreur CoinGecko {symbole} : {data}")
+        if not isinstance(data, list):
             return None, None, None
         closes = [float(k[4]) for k in data]
         highs  = [float(k[2]) for k in data]
@@ -61,18 +56,13 @@ def get_klines_coingecko(symbole, limite=100):
         print(f"  Erreur klines {symbole} : {e}")
         return None, None, None
 
-def get_prix_actuel_coingecko(symbole):
-    """Récupère le prix actuel via CoinGecko"""
+def get_prix_actuel(symbole):
     coin_id = COINGECKO_IDS.get(symbole)
-    if not coin_id:
-        return None
     url = "https://api.coingecko.com/api/v3/simple/price"
     params = {"ids": coin_id, "vs_currencies": "usd"}
     try:
         r = requests.get(url, params=params, timeout=10)
-        data = r.json()
-        prix = data[coin_id]["usd"]
-        return float(prix)
+        return float(r.json()[coin_id]["usd"])
     except Exception as e:
         print(f"  Erreur prix {symbole} : {e}")
         return None
@@ -93,8 +83,7 @@ def calculer_rsi(closes, periode=14):
     moy_perte = sum(pertes[-periode:]) / periode
     if moy_perte == 0:
         return 100
-    rs = moy_gain / moy_perte
-    return round(100 - (100 / (1 + rs)), 2)
+    return round(100 - (100 / (1 + moy_gain / moy_perte)), 2)
 
 def calculer_moyenne_mobile(closes, periode):
     if len(closes) < periode:
@@ -113,7 +102,7 @@ def calculer_volatilite(closes, highs, lows, periode=14):
 
 def scorer_marche(symbole):
     print(f"\n  Analyse {symbole}...")
-    closes, highs, lows = get_klines_coingecko(symbole)
+    closes, highs, lows = get_klines(symbole)
     if closes is None:
         return 0, "NEUTRE", {}
 
@@ -151,15 +140,12 @@ def scorer_marche(symbole):
         direction = direction_ma
 
     print(f"    RSI        : {rsi} -> {score_rsi}/10 ({direction})")
-    print(f"    MA         : {score_ma}/10 ({direction_ma})")
+    print(f"    MA         : {score_ma}/10")
     print(f"    Volatilite : {volatilite}% -> {score_vol}/10")
     print(f"    SCORE      : {score_total}/30")
 
     return score_total, direction, {
-        "rsi": rsi, "score_rsi": score_rsi,
-        "score_ma": score_ma, "volatilite": volatilite,
-        "score_vol": score_vol, "score_total": score_total,
-        "direction": direction
+        "rsi": rsi, "score_total": score_total, "direction": direction
     }
 
 def choisir_meilleur_marche():
@@ -170,88 +156,83 @@ def choisir_meilleur_marche():
     for marche in MARCHES:
         score, direction, details = scorer_marche(marche)
         resultats[marche] = {"score": score, "direction": direction, "details": details}
-        time.sleep(2)  # Respecter rate limit CoinGecko
+        time.sleep(2)
     meilleur = max(resultats, key=lambda x: resultats[x]["score"])
     print(f"\n  MARCHE CHOISI : {meilleur} (score {resultats[meilleur]['score']}/30)")
     print(f"  Direction     : {resultats[meilleur]['direction']}")
     return meilleur, resultats[meilleur]["direction"], resultats[meilleur]["details"]
 
 # ══════════════════════════════════════════════════════════════
-# SIMULATION DU TRADE (sans Binance)
+# SIMULATION DU TRADE EN TEMPS RÉEL
 # ══════════════════════════════════════════════════════════════
 
 def simuler_trade(symbole, direction, mise):
-    """
-    Surveille le prix en temps réel et simule le trade.
-    Vérifie toutes les 5 minutes si objectif ou stop-loss atteint.
-    Timeout : 24h max puis on ferme au prix du moment.
-    """
-    prix_entree = get_prix_actuel_coingecko(symbole)
+    prix_entree = get_prix_actuel(symbole)
     if prix_entree is None:
-        print("  Erreur : impossible de recuperer le prix d'entree")
         return "PERDU", -mise
 
     if direction == "ACHAT":
         prix_objectif  = round(prix_entree * (1 + OBJECTIF_PCT), 4)
-        prix_stop_loss = round(prix_entree * (1 - STOP_LOSS_PCT), 4)
+        prix_stop_loss = round(prix_entree * (1 - STOP_PCT), 4)
     else:
         prix_objectif  = round(prix_entree * (1 - OBJECTIF_PCT), 4)
-        prix_stop_loss = round(prix_entree * (1 + STOP_LOSS_PCT), 4)
+        prix_stop_loss = round(prix_entree * (1 + STOP_PCT), 4)
+
+    gain_potentiel = round(mise * GAIN_RATIO, 2)
 
     print(f"\n  TRADE SIMULE OUVERT")
-    print(f"  Symbole    : {symbole}")
-    print(f"  Direction  : {direction}")
-    print(f"  Mise       : {mise}EUR (levier x{LEVIER} = {mise*LEVIER}EUR controles)")
-    print(f"  Prix entree: {prix_entree}")
-    print(f"  Objectif   : {prix_objectif} (+{mise*2}EUR si atteint)")
-    print(f"  Stop-Loss  : {prix_stop_loss} (-{mise}EUR si atteint)")
+    print(f"  Symbole      : {symbole}")
+    print(f"  Direction    : {direction}")
+    print(f"  Mise         : {mise}EUR (levier x{LEVIER} = {mise*LEVIER}EUR controles)")
+    print(f"  Prix entree  : {prix_entree}")
+    print(f"  Objectif     : {prix_objectif} (+{int(OBJECTIF_PCT*100)}% -> +{gain_potentiel}EUR)")
+    print(f"  Stop-Loss    : {prix_stop_loss} (-{int(STOP_PCT*100)}% -> -{mise}EUR)")
     print(f"  Verification toutes les 5 minutes...\n")
 
-    debut = time.time()
+    debut   = time.time()
     timeout = 24 * 3600  # 24h max
 
     while True:
-        time.sleep(300)  # Vérification toutes les 5 minutes
+        time.sleep(300)  # 5 minutes
 
-        prix_actuel = get_prix_actuel_coingecko(symbole)
+        prix_actuel = get_prix_actuel(symbole)
         if prix_actuel is None:
             continue
 
         heure = datetime.now().strftime("%H:%M:%S")
         duree = int((time.time() - debut) / 60)
 
-        print(f"  [{heure}] {symbole} : {prix_actuel} USD | "
-              f"Objectif : {prix_objectif} | Stop : {prix_stop_loss} | "
-              f"Depuis : {duree}min")
+        # Calcul PnL actuel
+        if direction == "ACHAT":
+            pnl_pct = (prix_actuel - prix_entree) / prix_entree * LEVIER * 100
+        else:
+            pnl_pct = (prix_entree - prix_actuel) / prix_entree * LEVIER * 100
+        pnl_eur = round(mise * pnl_pct / 100, 2)
+
+        print(f"  [{heure}] {symbole}: {prix_actuel} | "
+              f"PnL: {'+' if pnl_eur >= 0 else ''}{pnl_eur}EUR ({'+' if pnl_pct >= 0 else ''}{round(pnl_pct,1)}%) | "
+              f"Objectif: {prix_objectif} | Stop: {prix_stop_loss} | {duree}min")
 
         if direction == "ACHAT":
             if prix_actuel >= prix_objectif:
-                print(f"\n  OBJECTIF ATTEINT ! {prix_actuel} >= {prix_objectif}")
-                print(f"  RESULTAT : GAGNE +{mise*2}EUR")
-                return "GAGNE", mise * 2
+                print(f"\n  OBJECTIF ATTEINT ! +{gain_potentiel}EUR")
+                return "GAGNE", gain_potentiel
             elif prix_actuel <= prix_stop_loss:
-                print(f"\n  STOP-LOSS ATTEINT ! {prix_actuel} <= {prix_stop_loss}")
-                print(f"  RESULTAT : PERDU -{mise}EUR")
+                print(f"\n  STOP-LOSS ATTEINT ! -{mise}EUR")
                 return "PERDU", -mise
         else:
             if prix_actuel <= prix_objectif:
-                print(f"\n  OBJECTIF ATTEINT ! {prix_actuel} <= {prix_objectif}")
-                print(f"  RESULTAT : GAGNE +{mise*2}EUR")
-                return "GAGNE", mise * 2
+                print(f"\n  OBJECTIF ATTEINT ! +{gain_potentiel}EUR")
+                return "GAGNE", gain_potentiel
             elif prix_actuel >= prix_stop_loss:
-                print(f"\n  STOP-LOSS ATTEINT ! {prix_actuel} >= {prix_stop_loss}")
-                print(f"  RESULTAT : PERDU -{mise}EUR")
+                print(f"\n  STOP-LOSS ATTEINT ! -{mise}EUR")
                 return "PERDU", -mise
 
         # Timeout 24h
         if time.time() - debut > timeout:
-            pnl_pct = (prix_actuel - prix_entree) / prix_entree
-            if direction == "VENTE":
-                pnl_pct = -pnl_pct
-            gain = round(mise * pnl_pct * LEVIER, 2)
+            gain = round(mise * pnl_pct / 100, 2)
             resultat = "GAGNE" if gain > 0 else "PERDU"
-            print(f"\n  TIMEOUT 24H — Fermeture au prix actuel : {prix_actuel}")
-            print(f"  RESULTAT : {resultat} {'+' if gain >= 0 else ''}{gain}EUR")
+            print(f"\n  TIMEOUT 24H — Fermeture : {'+' if gain >= 0 else ''}{gain}EUR")
             return resultat, gain
 
 # ══════════════════════════════════════════════════════════════
@@ -281,12 +262,12 @@ def afficher_tableau_de_bord(etat):
     print("\n" + "="*55)
     print("  TABLEAU DE BORD")
     print("="*55)
-    print(f"  Mise actuelle      : {etat['mise_actuelle']}EUR")
-    print(f"  Pertes consecutives: {etat['pertes_consecutives']}")
-    print(f"  Total gagne        : +{etat['total_gagne']}EUR")
-    print(f"  Total perdu        : -{etat['total_perdu']}EUR")
-    print(f"  Benefice net       : {'+' if etat['cumul_net'] >= 0 else ''}{round(etat['cumul_net'], 2)}EUR")
-    print(f"  Dernier trade      : {etat['date_dernier_trade'] or 'Aucun'}")
+    print(f"  Mise actuelle       : {etat['mise_actuelle']}EUR")
+    print(f"  Pertes consecutives : {etat['pertes_consecutives']}")
+    print(f"  Total gagne         : +{etat['total_gagne']}EUR")
+    print(f"  Total perdu         : -{etat['total_perdu']}EUR")
+    print(f"  Benefice net        : {'+' if etat['cumul_net'] >= 0 else ''}{round(etat['cumul_net'], 2)}EUR")
+    print(f"  Dernier trade       : {etat['date_dernier_trade'] or 'Aucun'}")
     if etat["historique"]:
         print(f"\n  Derniers trades :")
         for h in etat["historique"][-5:]:
@@ -300,11 +281,11 @@ def calculer_prochaine_mise(etat, resultat):
     if resultat == "GAGNE":
         etat["mise_actuelle"]        = MISE_DEPART
         etat["pertes_consecutives"]  = 0
-        print(f"\n  GAGNE ! Retour a la mise de depart : {MISE_DEPART}EUR demain")
+        print(f"\n  GAGNE ! Retour a {MISE_DEPART}EUR demain")
     else:
         prochaine = etat["mise_actuelle"] * 2
         etat["pertes_consecutives"] += 1
-        print(f"\n  PERDU. Mise doublee pour demain : {prochaine}EUR")
+        print(f"\n  PERDU. Mise doublee : {prochaine}EUR demain")
         print(f"  ({etat['pertes_consecutives']} perte(s) consecutive(s))")
         etat["mise_actuelle"] = prochaine
     return etat
@@ -328,7 +309,9 @@ def trade_du_jour():
         return
 
     mise = etat["mise_actuelle"]
-    print(f"\n  Mise du jour : {mise}EUR | Objectif : +{mise*2}EUR net")
+    print(f"\n  Mise du jour    : {mise}EUR")
+    print(f"  Gain potentiel  : +{round(mise*GAIN_RATIO,2)}EUR")
+    print(f"  Perte potentiel : -{mise}EUR")
 
     symbole, direction, details = choisir_meilleur_marche()
 
@@ -349,12 +332,12 @@ def trade_du_jour():
 
     etat["cumul_net"] = round(etat["total_gagne"] - etat["total_perdu"], 2)
     etat["historique"].append({
-        "date":     aujourd_hui,
-        "marche":   symbole,
-        "mise":     mise,
-        "resultat": resultat,
-        "gain":     round(gain_perte, 2),
-        "cumul":    etat["cumul_net"],
+        "date":      aujourd_hui,
+        "marche":    symbole,
+        "mise":      mise,
+        "resultat":  resultat,
+        "gain":      round(gain_perte, 2),
+        "cumul":     etat["cumul_net"],
         "direction": direction
     })
 
