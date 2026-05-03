@@ -22,7 +22,7 @@ GAIN_CIBLE        = 1.50    # +1.50EUR
 STOP_LOSS         = -1.50   # -1.50EUR
 PAUSE             = 120     # 2 minutes entre trades
 SCORE_MIN         = 10      # Ne trade que si score > 15/30
-MARCHES           = ["SOLUSDT"]
+MARCHES           = ["ETHUSDT", "SOLUSDT", "AVAXUSDT"]
 FICHIER_ETAT      = "etat_bot.json"
 
 KRAKEN_SYMBOLS = {
@@ -115,6 +115,7 @@ def calculer_volatilite(closes, highs, lows, periode=14):
 def scorer_marche(symbole):
     closes, highs, lows = get_klines(symbole)
     if closes is None:
+        print(f"    {symbole} : Erreur recuperation donnees")
         return 0, "NEUTRE", {}
 
     rsi        = calculer_rsi(closes)
