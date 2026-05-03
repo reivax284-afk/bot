@@ -118,6 +118,57 @@ def calculer_volatilite(closes, highs, lows, periode=14):
     amplitudes = [(highs[i] - lows[i]) / closes[i] * 100 for i in range(-periode, 0)]
     return round(sum(amplitudes) / len(amplitudes), 2)
 
+def calculer_macd(closes, rapide=12, lente=26, signal=9):
+    """
+    Calcule le MACD et sa ligne de signal.
+    Retourne : (macd, signal_line, histogramme)
+    - macd > signal_line ET histogramme > 0 → tendance HAUSSIERE
+    - macd < signal_line ET histogramme < 0 → tendance BAISSIERE
+    """
+    if len(closes) < lente + signal:
+        return 0, 0, 0
+
+    def ema(data, periode):
+        k = 2 / (periode + 1)
+        ema_val = data[0]
+        for price in data[1:]:
+            ema_val = price * k + ema_val * (1 - k)
+        return ema_val
+
+    # Calcul EMA rapide et lente
+    ema_rapide = ema(closes[-rapide*2:], rapide)
+    ema_lente  = ema(closes[-lente*2:], lente)
+    macd_line  = ema_rapide - ema_lente
+
+    # Calcul ligne de signal (EMA du MACD)
+    macd_values = []
+    for i in range(signal * 2):
+        idx = -(signal * 2) + i
+        er = ema(closes[idx-rapide:idx] if idx != 0 else closes[-rapide:], rapide)
+        el = ema(closes[idx-lente:idx] if idx != 0 else closes[-lente:], lente)
+        macd_values.append(er - el)
+
+    signal_line  = ema(macd_values, signal)
+    histogramme  = macd_line - signal_line
+
+    return round(macd_line, 6), round(signal_line, 6), round(histogramme, 6)
+
+def get_tendance_macd(closes):
+    """
+    Retourne la tendance selon MACD :
+    - HAUSSIERE : ne pas vendre
+    - BAISSIERE : ne pas acheter
+    - NEUTRE    : les deux directions possibles
+    """
+    macd, signal, histo = calculer_macd(closes)
+
+    if macd > signal and histo > 0:
+        return HAUSSIERE
+    elif macd < signal and histo < 0:
+        return BAISSIERE
+    else:
+        return NEUTRE
+
 # ══════════════════════════════════════════════════════════════
 # SCORING ET CHOIX DU MARCHÉ
 # ══════════════════════════════════════════════════════════════
@@ -161,9 +212,23 @@ def scorer_marche(symbole):
     if direction == "NEUTRE":
         direction = direction_ma
 
+    # Filtre MACD — vérifie la tendance
+    tendance = get_tendance_macd(closes)
+
+    # Si MACD contredit la direction → on bloque le trade
+    if tendance == "HAUSSIERE" and direction == "VENTE":
+        print(f"    {symbole} : MACD HAUSSIER — VENTE bloquee")
+        return 0, "NEUTRE", {}
+    elif tendance == "BAISSIERE" and direction == "ACHAT":
+        print(f"    {symbole} : MACD BAISSIER — ACHAT bloque")
+        return 0, "NEUTRE", {}
+
+    print(f"    MACD tendance : {tendance} — direction {direction} validee")
+
     return score_total, direction, {
         "rsi": rsi, "score_total": score_total,
-        "volatilite": volatilite, "direction": direction
+        "volatilite": volatilite, "direction": direction,
+        "macd_tendance": tendance
     }
 
 def choisir_meilleur_marche():
@@ -350,6 +415,8 @@ def demarrer_bot():
 
 if __name__ == "__main__":
     demarrer_bot()
+
+
 
 
 
