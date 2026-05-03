@@ -1,7 +1,8 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║       BOT MARTINGALE — SCALPING SIMULATION                  ║
-║       Mise fixe 50EUR | +1EUR = ferme | -25EUR = ferme      ║
+║       BOT SCALPING — SIMULATION COMPLETE                    ║
+║       Source prix : Kraken (sans restriction)               ║
+║       Mise fixe 50EUR | +0.10EUR = ferme | -25EUR = ferme   ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -15,57 +16,67 @@ from datetime import datetime
 # CONFIGURATION
 # ══════════════════════════════════════════════════════════════
 
-MISE         = 50.0
-LEVIER       = 3
-GAIN_CIBLE   = 0.10    # Ferme dès +1EUR
-STOP_LOSS    = -25.0  # Ferme dès -25EUR
-PAUSE_ENTRE_TRADES = 600  # 10 minutes en secondes
-MARCHES      = ["SOLUSDT"]
-FICHIER_ETAT = "etat_bot.json"
+MISE              = 50.0
+LEVIER            = 3
+GAIN_CIBLE        = 0.10   # +0.10EUR
+STOP_LOSS         = -25.0  # -25EUR
+PAUSE             = 600    # 10 minutes entre trades
+MARCHES           = ["SOLUSDT"]
+FICHIER_ETAT      = "etat_bot.json"
 
-COINGECKO_IDS = {
-    "ETHUSDT": "ethereum",
-    "SOLUSDT": "solana"
+KRAKEN_SYMBOLS = {
+    "ETHUSDT": "XETHZUSD",
+    "SOLUSDT": "SOLUSDT"
 }
 
 print("=" * 55)
 print("  BOT SCALPING — SIMULATION COMPLETE")
-print(f"  Mise fixe   : {MISE}EUR | Levier : x{LEVIER}")
-print(f"  Objectif    : +{GAIN_CIBLE}EUR | Stop : {STOP_LOSS}EUR")
-print(f"  Pause       : {PAUSE_ENTRE_TRADES//60} minutes entre chaque trade")
+print(f"  Mise fixe  : {MISE}EUR | Levier : x{LEVIER}")
+print(f"  Objectif   : +{GAIN_CIBLE}EUR | Stop : {STOP_LOSS}EUR")
+print(f"  Pause      : {PAUSE//60} minutes entre chaque trade")
+print(f"  Source     : Kraken API (sans restriction)")
 print("=" * 55)
 
 # ══════════════════════════════════════════════════════════════
-# RÉCUPÉRATION DES PRIX
+# RÉCUPÉRATION DES PRIX VIA KRAKEN
 # ══════════════════════════════════════════════════════════════
 
+def get_prix_actuel(symbole):
+    kraken_symbol = KRAKEN_SYMBOLS.get(symbole, symbole)
+    url = "https://api.kraken.com/0/public/Ticker"
+    try:
+        r = requests.get(url, params={"pair": kraken_symbol}, timeout=10)
+        data = r.json()
+        if data.get("error"):
+            print(f"  Erreur Kraken : {data['error']}")
+            return None
+        result = data.get("result", {})
+        key = list(result.keys())[0]
+        prix = float(result[key]["c"][0])  # "c" = dernier prix
+        return prix
+    except Exception as e:
+        print(f"  Erreur prix {symbole} : {e}")
+        return None
+
 def get_klines(symbole, limite=50):
-    coin_id = COINGECKO_IDS.get(symbole)
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
-    params = {"vs_currency": "usd", "days": "7"}
+    kraken_symbol = KRAKEN_SYMBOLS.get(symbole, symbole)
+    url = "https://api.kraken.com/0/public/OHLC"
+    params = {"pair": kraken_symbol, "interval": 60}  # bougies 1h
     try:
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
-        if not isinstance(data, list):
+        if data.get("error"):
             return None, None, None
-        closes = [float(k[4]) for k in data]
-        highs  = [float(k[2]) for k in data]
-        lows   = [float(k[3]) for k in data]
+        result = data.get("result", {})
+        key = [k for k in result.keys() if k != "last"][0]
+        candles = result[key]
+        closes = [float(k[4]) for k in candles]
+        highs  = [float(k[2]) for k in candles]
+        lows   = [float(k[3]) for k in candles]
         return closes[-limite:], highs[-limite:], lows[-limite:]
     except Exception as e:
         print(f"  Erreur klines {symbole} : {e}")
         return None, None, None
-
-def get_prix_actuel(symbole):
-    coin_id = COINGECKO_IDS.get(symbole)
-    url = "https://api.coingecko.com/api/v3/simple/price"
-    params = {"ids": coin_id, "vs_currencies": "usd"}
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        return float(r.json()[coin_id]["usd"])
-    except Exception as e:
-        print(f"  Erreur prix {symbole} : {e}")
-        return None
 
 # ══════════════════════════════════════════════════════════════
 # INDICATEURS TECHNIQUES
@@ -149,10 +160,11 @@ def choisir_meilleur_marche():
         score, direction, details = scorer_marche(marche)
         resultats[marche] = {"score": score, "direction": direction, "details": details}
         print(f"    {marche} : score {score}/30 ({direction})")
-        time.sleep(2)
-    meilleur = max(resultats, key=lambda x: resultats[x]["score"])
-    print(f"  => CHOIX : {meilleur} ({resultats[meilleur]['direction']})")
-    return meilleur, resultats[meilleur]["direction"], resultats[meilleur]["details"]
+        time.sleep(1)
+    meilleur  = max(resultats, key=lambda x: resultats[x]["score"])
+    direction = resultats[meilleur]["direction"]
+    print(f"  => CHOIX : {meilleur} ({direction})")
+    return meilleur, direction, resultats[meilleur]["details"]
 
 # ══════════════════════════════════════════════════════════════
 # SIMULATION DU TRADE
@@ -163,8 +175,6 @@ def simuler_trade(symbole, direction, numero_trade):
     if prix_entree is None:
         return "ERREUR", 0
 
-    # Calcul du mouvement nécessaire pour +1EUR avec levier x3
-    # +1EUR sur 50EUR = +2% de gain = +0.67% de mouvement prix avec levier x3
     pct_gain_cible = GAIN_CIBLE / (MISE * LEVIER)
     pct_stop       = abs(STOP_LOSS) / (MISE * LEVIER)
 
@@ -182,18 +192,17 @@ def simuler_trade(symbole, direction, numero_trade):
     print(f"  Prix entree: {prix_entree}")
     print(f"  Objectif   : {prix_objectif} -> +{GAIN_CIBLE}EUR")
     print(f"  Stop-Loss  : {prix_stop_loss} -> {STOP_LOSS}EUR")
-    print(f"  Surveillance toutes les 30 secondes...")
+    print(f"  Surveillance toutes les 60 secondes...\n")
 
     debut = time.time()
 
     while True:
-        time.sleep(60)  # Vérification toutes les 30 secondes
+        time.sleep(60)
 
         prix_actuel = get_prix_actuel(symbole)
         if prix_actuel is None:
             continue
 
-        # Calcul PnL actuel
         if direction == "ACHAT":
             pnl = round((prix_actuel - prix_entree) / prix_entree * MISE * LEVIER, 2)
         else:
@@ -201,17 +210,21 @@ def simuler_trade(symbole, direction, numero_trade):
 
         heure = datetime.now().strftime("%H:%M:%S")
         duree = int((time.time() - debut) / 60)
-        print(f"  [{heure}] {symbole}: {prix_actuel} | PnL: {'+' if pnl >= 0 else ''}{pnl}EUR | {duree}min")
+        print(f"  [{heure}] {symbole}: {prix_actuel} | "
+              f"PnL: {'+' if pnl >= 0 else ''}{pnl}EUR | {duree}min")
 
-        # Objectif atteint ?
         if pnl >= GAIN_CIBLE:
             print(f"\n  OBJECTIF ATTEINT ! +{pnl}EUR")
             return "GAGNE", pnl
 
-        # Stop-loss atteint ?
         if pnl <= STOP_LOSS:
             print(f"\n  STOP-LOSS ATTEINT ! {pnl}EUR")
             return "PERDU", pnl
+
+        # Timeout 24h
+        if time.time() - debut > 86400:
+            print(f"\n  TIMEOUT 24H — Fermeture : {'+' if pnl >= 0 else ''}{pnl}EUR")
+            return ("GAGNE" if pnl > 0 else "PERDU"), pnl
 
 # ══════════════════════════════════════════════════════════════
 # GESTION DE L'ÉTAT
@@ -246,6 +259,13 @@ def afficher_tableau_de_bord(etat):
     print(f"  Total gagne   : +{round(etat['total_gagne'], 2)}EUR")
     print(f"  Total perdu   : -{round(etat['total_perdu'], 2)}EUR")
     print(f"  BENEFICE NET  : {'+' if etat['cumul_net'] >= 0 else ''}{round(etat['cumul_net'], 2)}EUR")
+    if etat["historique"]:
+        print(f"\n  Derniers trades :")
+        for h in etat["historique"][-5:]:
+            icone = "OK" if h["resultat"] == "GAGNE" else "XX"
+            print(f"    [{icone}] {h['heure']} | {h['marche']} | "
+                  f"{h['resultat']} | {'+' if h['gain'] >= 0 else ''}{h['gain']}EUR | "
+                  f"Cumul: {'+' if h['cumul'] >= 0 else ''}{h['cumul']}EUR")
     print(f"  {'='*55}")
 
 # ══════════════════════════════════════════════════════════════
@@ -264,45 +284,44 @@ def demarrer_bot():
 
             if direction == "NEUTRE":
                 print("  Aucun signal. Nouvelle analyse dans 10 minutes...")
-                time.sleep(PAUSE_ENTRE_TRADES)
+                time.sleep(PAUSE)
                 continue
 
             resultat, gain = simuler_trade(symbole, direction, etat["nb_trades"])
 
             if resultat == "ERREUR":
                 print("  Erreur trade. Nouvelle tentative dans 10 minutes...")
-                time.sleep(PAUSE_ENTRE_TRADES)
+                etat["nb_trades"] -= 1
+                time.sleep(PAUSE)
                 continue
 
-            # Mise à jour stats
             if resultat == "GAGNE":
-                etat["nb_wins"]    += 1
-                etat["total_gagne"] = round(etat["total_gagne"] + gain, 2)
+                etat["nb_wins"]     += 1
+                etat["total_gagne"]  = round(etat["total_gagne"] + gain, 2)
             else:
                 etat["nb_losses"]   += 1
-                etat["total_perdu"] = round(etat["total_perdu"] + abs(gain), 2)
+                etat["total_perdu"]  = round(etat["total_perdu"] + abs(gain), 2)
 
             etat["cumul_net"] = round(etat["total_gagne"] - etat["total_perdu"], 2)
             etat["historique"].append({
-                "heure":    datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "marche":   symbole,
+                "heure":     datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "marche":    symbole,
                 "direction": direction,
-                "resultat": resultat,
-                "gain":     round(gain, 2),
-                "cumul":    etat["cumul_net"]
+                "resultat":  resultat,
+                "gain":      round(gain, 2),
+                "cumul":     etat["cumul_net"]
             })
             sauvegarder_etat(etat)
             afficher_tableau_de_bord(etat)
 
             print(f"\n  Pause de 10 minutes avant le prochain trade...")
-            time.sleep(PAUSE_ENTRE_TRADES)
+            time.sleep(PAUSE)
 
         except KeyboardInterrupt:
             print("\n  Bot arrete.")
             break
         except Exception as e:
             print(f"\n  Erreur : {e}")
-            print("  Nouvelle tentative dans 5 minutes...")
             time.sleep(300)
 
 if __name__ == "__main__":
