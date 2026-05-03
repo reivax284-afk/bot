@@ -217,18 +217,18 @@ def scorer_marche(symbole):
 
     # Si MACD contredit la direction → on bloque le trade
     if tendance == 'HAUSSIERE' and direction == 'VENTE':
-        print(f"    {symbole} : MACD HAUSSIER — VENTE bloquee")
-        return 0, "NEUTRE", {}
+        print(f"    {symbole} : RSI {rsi} | MACD HAUSSIER — VENTE bloquee")
+        return 0, 'NEUTRE', {'rsi': rsi, 'score_total': 0, 'volatilite': volatilite, 'direction': 'NEUTRE', 'macd_tendance': tendance}
     elif tendance == 'BAISSIERE' and direction == 'ACHAT':
-        print(f"    {symbole} : MACD BAISSIER — ACHAT bloque")
-        return 0, "NEUTRE", {}
+        print(f"    {symbole} : RSI {rsi} | MACD BAISSIER — ACHAT bloque")
+        return 0, 'NEUTRE', {'rsi': rsi, 'score_total': 0, 'volatilite': volatilite, 'direction': 'NEUTRE', 'macd_tendance': tendance}
 
-    print(f"    MACD tendance : {tendance} — direction {direction} validee")
+    print(f"    {symbole} : MACD {tendance} — direction {direction} validee ✅")
 
     return score_total, direction, {
-        "rsi": rsi, "score_total": score_total,
-        "volatilite": volatilite, "direction": direction,
-        "macd_tendance": tendance
+        'rsi': rsi, 'score_total': score_total,
+        'volatilite': volatilite, 'direction': direction,
+        'macd_tendance': tendance
     }
 
 def choisir_meilleur_marche():
