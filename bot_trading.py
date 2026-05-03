@@ -20,7 +20,7 @@ LEVIER            = 3
 GAIN_CIBLE        = 0.10    # +0.10EUR
 STOP_LOSS         = -25.0   # -25EUR
 PAUSE             = 120     # 2 minutes entre trades
-SEUIL_TENDANCE    = 0.5     # 1% de mouvement pour confirmer tendance
+SEUIL_TENDANCE    = 1.0     # 1% de mouvement pour confirmer tendance
 MARCHES           = ["ETHUSDT", "SOLUSDT", "XRPUSDT", "AVAXUSDT"]
 FICHIER_ETAT      = "etat_bot.json"
 
@@ -63,7 +63,7 @@ def get_prix_actuel(symbole):
 def get_klines(symbole, limite=50):
     kraken_symbol = KRAKEN_SYMBOLS.get(symbole, symbole)
     url = "https://api.kraken.com/0/public/OHLC"
-    params = {"pair": kraken_symbol, "interval": 5}
+    params = {"pair": kraken_symbol, "interval": 1}
     try:
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
