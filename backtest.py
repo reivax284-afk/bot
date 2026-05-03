@@ -1,138 +1,172 @@
-"""
-BACKTESTING — 30 DERNIERS JOURS
-Strategie Martingale · ETH & SOL · Levier x3
-Utilise l'API publique Binance Spot (pas de cle API necessaire)
-"""
-
 import requests
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
-MISE_DEPART = 5.0
-LEVIER      = 3
-# API publique Binance Spot - pas besoin de cle API
-BASE_URL    = "https://api.binance.com"
+# === CONFIGURATION ===
+SYMBOL_ETH = "ETHUSDT"
+SYMBOL_SOL = "SOLUSDT"
+INITIAL_BET = 5.0
+LEVERAGE = 3
+TARGET_MULTIPLIER = 3  # x3 objectif
+DAYS_BACKTEST = 90  # Nombre de jours à backtester
 
-def get_donnees(symbole, jours=30):
+def get_klines(symbol, interval="1d", limit=100):
+    """Récupère les données historiques depuis api.binance.com (spot)"""
+    url = "https://api.binance.com/api/v3/klines"
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit
+    }
     try:
-        r = requests.get(f"{BASE_URL}/api/v3/klines",
-                         params={"symbol": symbole, "interval": "1d", "limit": jours}, timeout=10)
-        data = r.json()
-        if not isinstance(data, list):
-            print(f"Erreur API {symbole} : {data}")
-            return []
-        journees = []
-        for k in data:
-            open_p  = float(k[1])
-            close_p = float(k[4])
-            variation = round((close_p - open_p) / open_p * 100, 2)
-            journees.append({
-                "date": datetime.fromtimestamp(int(k[0])/1000).strftime("%Y-%m-%d"),
-                "open": open_p, "close": close_p, "variation": variation
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        candles = []
+        for candle in data:
+            candles.append({
+                "open_time": candle[0],
+                "open":  float(candle[1]),
+                "high":  float(candle[2]),
+                "low":   float(candle[3]),
+                "close": float(candle[4]),
+                "volume": float(candle[5]),
             })
-        return journees
+        return candles
     except Exception as e:
-        print(f"Erreur {symbole} : {e}")
+        print(f"Erreur récupération données {symbol}: {e}")
         return []
 
-def get_closes(symbole, limite=100):
-    try:
-        r = requests.get(f"{BASE_URL}/api/v3/klines",
-                         params={"symbol": symbole, "interval": "1h", "limit": limite}, timeout=10)
-        data = r.json()
-        if not isinstance(data, list):
-            return []
-        return [float(k[4]) for k in data]
-    except Exception as e:
-        print(f"Erreur closes {symbole} : {e}")
-        return []
-
-def rsi(closes, p=14):
-    if len(closes) < p+1:
-        return 50
-    g = [max(0.0, closes[i]-closes[i-1]) for i in range(1,len(closes))]
-    l = [max(0.0, closes[i-1]-closes[i]) for i in range(1,len(closes))]
-    mg, ml = sum(g[-p:])/p, sum(l[-p:])/p
-    return round(100-(100/(1+mg/ml)),2) if ml > 0 else 100
-
-def lancer_backtesting():
-    print("\n" + "="*60)
-    print("BACKTESTING — 30 DERNIERS JOURS")
-    print("Strategie : Martingale Journaliere · Levier x3")
-    print("="*60)
-
-    print("Recuperation des donnees...")
-    eth = get_donnees("ETHUSDT", 30)
-    sol = get_donnees("SOLUSDT", 30)
-    c_eth = get_closes("ETHUSDT", 200)
-    c_sol = get_closes("SOLUSDT", 200)
-
-    if not eth or not sol:
-        print("ERREUR : Donnees non disponibles")
-        return
-
-    print(f"{len(eth)} jours de donnees ETH recuperes")
-    print(f"{len(sol)} jours de donnees SOL recuperes\n")
-
-    mise = MISE_DEPART
-    cumul = 0.0
-    gagnes, perdus = 0, 0
-
-    print(f"{'Date':<12} {'Marche':<6} {'Dir':<7} {'Mise':>6} {'Res':<12} {'Gain':>8} {'Cumul':>8}")
-    print("-"*65)
-
-    for i, (je, js) in enumerate(zip(eth, sol)):
-        re = rsi(c_eth[-100:]) if c_eth else 50
-        rs = rsi(c_sol[-100:]) if c_sol else 50
-
-        se = 8 if re < 30 or re > 70 else 3
-        ss = 8 if rs < 30 or rs > 70 else 3
-        de = "ACHAT" if re < 50 else "VENTE"
-        ds = "ACHAT" if rs < 50 else "VENTE"
-
-        if se >= ss:
-            marche, direction, var = "ETH", de, je["variation"]
-        else:
-            marche, direction, var = "SOL", ds, js["variation"]
-
-        if direction == "ACHAT":
-            resultat = "GAGNE" if var > 0 else "PERDU"
-        else:
-            resultat = "GAGNE" if var < 0 else "PERDU"
-
-        if resultat == "GAGNE":
-            gain = mise * 2
-            cumul += gain
-            gagnes += 1
-            prochaine = MISE_DEPART
-            icone = "OUI"
-        else:
-            gain = -mise
-            cumul += gain
-            perdus += 1
-            prochaine = mise * 2
-            icone = "NON"
-
-        signe_gain = "+" if gain >= 0 else ""
-        signe_cumul = "+" if cumul >= 0 else ""
-        print(f"{je['date']:<12} {marche:<6} {direction:<7} {mise:>6.1f} {icone+' '+resultat:<12} {signe_gain}{gain:>7.2f} {signe_cumul}{cumul:>7.2f}")
-        mise = prochaine
-
-    print("\n" + "="*60)
-    print("RAPPORT FINAL")
-    print("="*60)
-    print(f"Trades gagnes  : {gagnes}")
-    print(f"Trades perdus  : {perdus}")
-    taux = round(gagnes/max(gagnes+perdus,1)*100,1)
-    print(f"Taux reussite  : {taux}%")
-    signe = "+" if cumul >= 0 else ""
-    print(f"Benefice net   : {signe}{round(cumul,2)} USDT")
-    print(f"Mise finale    : {mise} USDT")
-    print("="*60)
-    if cumul > 0:
-        print(f"RESULTAT POSITIF : {signe}{round(cumul,2)} USDT sur 30 jours !")
+def simulate_trade(candle, bet, leverage):
+    """
+    Simule un trade sur une bougie journalière.
+    Stratégie : on prend la direction de la bougie (haussière ou baissière).
+    - Si close > open → LONG
+    - Si close < open → SHORT
+    Résultat avec levier x3.
+    """
+    open_price = candle["open"]
+    close_price = candle["close"]
+    
+    price_change_pct = (close_price - open_price) / open_price  # ex: +0.02 = +2%
+    
+    # On suit la direction de la bougie
+    if close_price >= open_price:
+        direction = "LONG"
+        pnl_pct = price_change_pct * leverage
     else:
-        print(f"RESULTAT NEGATIF : {round(cumul,2)} USDT sur 30 jours")
+        direction = "SHORT"
+        pnl_pct = -price_change_pct * leverage  # short profite quand ça baisse
+    
+    pnl = bet * pnl_pct
+    won = pnl > 0
+    
+    return {
+        "direction": direction,
+        "open": open_price,
+        "close": close_price,
+        "change_pct": price_change_pct * 100,
+        "pnl_pct": pnl_pct * 100,
+        "pnl": pnl,
+        "won": won
+    }
+
+def run_backtest(symbol, candles):
+    """Lance le backtest avec stratégie martingale"""
+    print(f"\n{'='*60}")
+    print(f"BACKTEST MARTINGALE — {symbol}")
+    print(f"Mise de départ: {INITIAL_BET}€ | Levier: x{LEVERAGE} | {len(candles)} jours")
+    print(f"{'='*60}")
+    
+    bet = INITIAL_BET
+    total_profit = 0.0
+    total_invested = 0.0
+    wins = 0
+    losses = 0
+    max_bet = INITIAL_BET
+    max_drawdown = 0.0
+    consecutive_losses = 0
+    max_consecutive_losses = 0
+    
+    results = []
+    
+    for i, candle in enumerate(candles):
+        date = datetime.fromtimestamp(candle["open_time"] / 1000).strftime("%Y-%m-%d")
+        
+        trade = simulate_trade(candle, bet, LEVERAGE)
+        total_invested += bet
+        
+        if trade["won"]:
+            # Gain : on encaisse et on repart à la mise initiale
+            profit = bet * (TARGET_MULTIPLIER - 1)  # x3 donc profit = mise x2
+            total_profit += profit
+            wins += 1
+            consecutive_losses = 0
+            result_str = f"✅ GAGNÉ  +{profit:.2f}€"
+            next_bet = INITIAL_BET
+        else:
+            # Perte : on double la mise
+            total_profit -= bet
+            losses += 1
+            consecutive_losses += 1
+            max_consecutive_losses = max(max_consecutive_losses, consecutive_losses)
+            result_str = f"❌ PERDU  -{bet:.2f}€"
+            next_bet = bet * 2
+        
+        if bet > max_bet:
+            max_bet = bet
+        
+        cumulative = total_profit
+        
+        print(f"Jour {i+1:3d} | {date} | {trade['direction']:5s} | "
+              f"Mise: {bet:8.2f}€ | {result_str} | "
+              f"Cumul: {cumulative:+.2f}€")
+        
+        results.append({
+            "day": i + 1,
+            "date": date,
+            "bet": bet,
+            "won": trade["won"],
+            "profit": total_profit
+        })
+        
+        bet = next_bet
+    
+    # === RÉSUMÉ FINAL ===
+    print(f"\n{'='*60}")
+    print(f"RÉSUMÉ FINAL — {symbol}")
+    print(f"{'='*60}")
+    print(f"Jours tradés       : {len(candles)}")
+    print(f"Trades gagnés      : {wins} ({wins/len(candles)*100:.1f}%)")
+    print(f"Trades perdus      : {losses} ({losses/len(candles)*100:.1f}%)")
+    print(f"Profit net total   : {total_profit:+.2f}€")
+    print(f"Mise max atteinte  : {max_bet:.2f}€")
+    print(f"Pertes consécutives max : {max_consecutive_losses}")
+    print(f"Capital nécessaire : ~{max_bet * 2:.2f}€ (sécurité x2)")
+    print(f"{'='*60}\n")
+    
+    return results
+
+def main():
+    print("🚀 Démarrage du backtesting Martingale...")
+    print(f"📅 Date : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"📊 Récupération des données depuis api.binance.com...\n")
+    
+    # Récupération des données ETH
+    eth_candles = get_klines(SYMBOL_ETH, "1d", DAYS_BACKTEST)
+    if eth_candles:
+        run_backtest(SYMBOL_ETH, eth_candles)
+    else:
+        print(f"❌ Impossible de récupérer les données pour {SYMBOL_ETH}")
+    
+    # Récupération des données SOL
+    sol_candles = get_klines(SYMBOL_SOL, "1d", DAYS_BACKTEST)
+    if sol_candles:
+        run_backtest(SYMBOL_SOL, sol_candles)
+    else:
+        print(f"❌ Impossible de récupérer les données pour {SYMBOL_SOL}")
+    
+    print("✅ Backtesting terminé !")
 
 if __name__ == "__main__":
-    lancer_backtesting()
+    main()
