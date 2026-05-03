@@ -20,7 +20,7 @@ LEVIER            = 3
 GAIN_CIBLE        = 0.10    # +0.10EUR
 STOP_LOSS         = -25.0   # -25EUR
 PAUSE             = 120     # 2 minutes entre trades
-SEUIL_TENDANCE    = 1.0     # 1% de mouvement pour confirmer tendance
+SEUIL_TENDANCE    = 0.5     # 1% de mouvement pour confirmer tendance
 MARCHES           = ["ETHUSDT", "SOLUSDT", "XRPUSDT", "AVAXUSDT"]
 FICHIER_ETAT      = "etat_bot.json"
 
