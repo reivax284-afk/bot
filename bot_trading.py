@@ -22,13 +22,13 @@ GAIN_CIBLE        = 0.50    # +0.50EUR
 STOP_LOSS         = -25.0   # -25.0EUR
 PAUSE             = 120     # 2 minutes entre trades
 SCORE_MIN         = 10      # Ne trade que si score > 10/30
-MARCHES           = ["ETHUSDT", "SOLUSDT", "XRPUSDT", "AVAXUSDT"]
+MARCHES           = ["DOGEUSDT", "SOLUSDT", "XRPUSDT", "AVAXUSDT"]
 FICHIER_ETAT      = "etat_bot.json"
 
 KRAKEN_SYMBOLS = {
     "AVAXUSDT": "AVAXUSD",
     "XRPUSDT": "XXRPZUSD",
-    "ETHUSDT": "XETHZUSD",
+    "DOGEUSDT": "XDGUSD",
     "SOLUSDT": "SOLUSD"
 }
 
