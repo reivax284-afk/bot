@@ -18,7 +18,7 @@ from datetime import datetime
 
 MISE              = 50.0
 LEVIER            = 3
-GAIN_CIBLE        = 0.50    # +0.50EUR
+GAIN_CIBLE        = 0.75    # +0.50EUR
 STOP_LOSS         = -25.0   # -25.0EUR
 PAUSE             = 120     # 2 minutes entre trades
 SCORE_MIN         = 10      # Ne trade que si score > 10/30
