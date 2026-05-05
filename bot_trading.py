@@ -18,8 +18,8 @@ from datetime import datetime
 
 MISE              = 50.0
 LEVIER            = 3
-GAIN_CIBLE        = 0.75    # +0.75EUR
-STOP_LOSS         = -1.50   # -1.50EUR
+GAIN_CIBLE        = 0.75    # +0.50EUR
+STOP_LOSS         = -1.50   # -25.0EUR
 PAUSE             = 120     # 2 minutes entre trades
 SCORE_MIN         = 10      # Ne trade que si score > 10/30
 MARCHES           = ["DOGEUSDT", "SOLUSDT", "XRPUSDT", "AVAXUSDT", "BNBUSDT", "LINKUSDT", "ADAUSDT"]
@@ -353,5 +353,6 @@ def demarrer_bot():
 
 if __name__ == "__main__":
     demarrer_bot()
+
 
 
