@@ -1,7 +1,8 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║       BOT SCALPING — VERSION SIMPLE ORIGINALE               ║
-║       RSI + Volatilité | +0.75EUR | -25EUR                  ║
+║       BOT SCALPING V1 — RSI + MOMENTUM + PENTE              ║
+║       Mise 50EUR | +0.75EUR | -25EUR                        ║
+║       DOGE SOL XRP AVAX BNB LINK ADA                        ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -38,7 +39,7 @@ KRAKEN_SYMBOLS = {
 }
 
 print("=" * 55)
-print("  BOT SCALPING — VERSION SIMPLE ORIGINALE")
+print("  BOT SCALPING V1 — RSI + MOMENTUM + PENTE")
 print(f"  Mise      : {MISE}EUR | Levier : x{LEVIER}")
 print(f"  Objectif  : +{GAIN_CIBLE}EUR | Stop : {STOP_LOSS}EUR")
 print(f"  Pause     : 2 min | Score min : {SCORE_MIN}/30")
@@ -46,7 +47,7 @@ print(f"  Source    : Kraken API (sans restriction)")
 print("=" * 55)
 
 # ══════════════════════════════════════════════════════════════
-# RÉCUPÉRATION DES PRIX VIA KRAKEN
+# RÉCUPÉRATION DES DONNÉES VIA KRAKEN
 # ══════════════════════════════════════════════════════════════
 
 def get_prix_actuel(symbole):
@@ -88,7 +89,7 @@ def get_klines(symbole, limite=50):
         return None, None, None
 
 # ══════════════════════════════════════════════════════════════
-# INDICATEURS
+# INDICATEUR 1 — RSI
 # ══════════════════════════════════════════════════════════════
 
 def calculer_rsi(closes, periode=14):
@@ -105,11 +106,81 @@ def calculer_rsi(closes, periode=14):
         return 100
     return round(100 - (100 / (1 + moy_gain / moy_perte)), 2)
 
+# ══════════════════════════════════════════════════════════════
+# INDICATEUR 2 — PENTE ET MOMENTUM (2 bougies)
+# Détecte la direction et la force du mouvement
+# ══════════════════════════════════════════════════════════════
+
+def analyser_pente_momentum(closes, highs, lows):
+    """
+    Analyse la pente sur 2 bougies et le momentum :
+    - Direction : la courbe monte ou descend
+    - Force : les bougies s'amplifient (momentum fort) ou s'essoufflent (retournement proche)
+    - Retournement : changement de direction détecté
+    """
+    if len(closes) < 4:
+        return "NEUTRE", 0, "NEUTRE"
+
+    # Pente sur les 2 dernières bougies
+    bougie_1 = closes[-2] - closes[-3]  # avant-dernière bougie
+    bougie_2 = closes[-1] - closes[-2]  # dernière bougie
+
+    # Amplitude des 2 dernières bougies
+    amplitude_1 = abs(highs[-2] - lows[-2]) / closes[-2] * 100
+    amplitude_2 = abs(highs[-1] - lows[-1]) / closes[-1] * 100
+
+    # Direction de la pente
+    if bougie_2 > 0:
+        direction_pente = "ACHAT"
+    elif bougie_2 < 0:
+        direction_pente = "VENTE"
+    else:
+        direction_pente = "NEUTRE"
+
+    # Analyse du momentum
+    if bougie_1 > 0 and bougie_2 > 0:
+        # Les deux bougies montent
+        if amplitude_2 > amplitude_1:
+            momentum = "ACCELERATION_HAUSSE"  # Mouvement s'amplifie → ACHAT fort
+            force = 10
+        else:
+            momentum = "ESSOUFFLEMENT_HAUSSE"  # Mouvement ralentit → retournement possible → VENTE
+            force = 6
+    elif bougie_1 < 0 and bougie_2 < 0:
+        # Les deux bougies descendent
+        if amplitude_2 > amplitude_1:
+            momentum = "ACCELERATION_BAISSE"  # Mouvement s'amplifie → VENTE fort
+            force = 10
+        else:
+            momentum = "ESSOUFFLEMENT_BAISSE"  # Mouvement ralentit → retournement possible → ACHAT
+            force = 6
+    elif bougie_1 > 0 and bougie_2 < 0:
+        momentum = "RETOURNEMENT_BAISSIER"  # Montait → commence à descendre → VENTE
+        force = 8
+        direction_pente = "VENTE"
+    elif bougie_1 < 0 and bougie_2 > 0:
+        momentum = "RETOURNEMENT_HAUSSIER"  # Descendait → commence à monter → ACHAT
+        force = 8
+        direction_pente = "ACHAT"
+    else:
+        momentum = "NEUTRE"
+        force = 0
+
+    return direction_pente, force, momentum
+
+# ══════════════════════════════════════════════════════════════
+# INDICATEUR 3 — VOLATILITÉ
+# ══════════════════════════════════════════════════════════════
+
 def calculer_volatilite(closes, highs, lows, periode=14):
     if len(closes) < periode:
         return 0
     amplitudes = [(highs[i] - lows[i]) / closes[i] * 100 for i in range(-periode, 0)]
     return round(sum(amplitudes) / len(amplitudes), 2)
+
+# ══════════════════════════════════════════════════════════════
+# ANALYSE COMBINÉE — RSI + PENTE + MOMENTUM
+# ══════════════════════════════════════════════════════════════
 
 def scorer_marche(symbole):
     closes, highs, lows = get_klines(symbole)
@@ -117,35 +188,65 @@ def scorer_marche(symbole):
         print(f"  {symbole} : Erreur données")
         return 0, "NEUTRE", {}
 
-    rsi        = calculer_rsi(closes)
-    volatilite = calculer_volatilite(closes, highs, lows)
+    # RSI
+    rsi = calculer_rsi(closes)
 
     # Score RSI
-    if rsi < 25:   score_rsi, direction = 10, "ACHAT"
-    elif rsi < 30: score_rsi, direction = 8,  "ACHAT"
-    elif rsi < 40: score_rsi, direction = 5,  "ACHAT"
-    elif rsi > 75: score_rsi, direction = 10, "VENTE"
-    elif rsi > 70: score_rsi, direction = 8,  "VENTE"
-    elif rsi > 60: score_rsi, direction = 5,  "VENTE"
-    else:          score_rsi, direction = 2,  "NEUTRE"
+    if rsi < 25:   score_rsi, direction_rsi = 10, "ACHAT"
+    elif rsi < 30: score_rsi, direction_rsi = 8,  "ACHAT"
+    elif rsi < 40: score_rsi, direction_rsi = 5,  "ACHAT"
+    elif rsi > 75: score_rsi, direction_rsi = 10, "VENTE"
+    elif rsi > 70: score_rsi, direction_rsi = 8,  "VENTE"
+    elif rsi > 60: score_rsi, direction_rsi = 5,  "VENTE"
+    else:          score_rsi, direction_rsi = 2,  "NEUTRE"
 
-    # Score volatilité
+    # Pente et Momentum
+    direction_pente, force_momentum, momentum = analyser_pente_momentum(closes, highs, lows)
+
+    # Volatilité
+    volatilite = calculer_volatilite(closes, highs, lows)
     if volatilite > 3:     score_vol = 10
     elif volatilite > 2:   score_vol = 8
     elif volatilite > 1:   score_vol = 5
     elif volatilite > 0.5: score_vol = 3
     else:                  score_vol = 1
 
-    score_total = score_rsi + score_vol
+    # ── DIRECTION FINALE ──
+    # RSI et Pente doivent être cohérents
+    if direction_rsi == direction_pente and direction_rsi != "NEUTRE":
+        # RSI et pente d'accord → signal très fort
+        score_total = score_rsi + force_momentum + score_vol
+        direction_finale = direction_rsi
+    elif direction_rsi != "NEUTRE" and direction_pente == "NEUTRE":
+        # RSI seul
+        score_total = score_rsi + score_vol
+        direction_finale = direction_rsi
+    elif direction_pente != "NEUTRE" and direction_rsi == "NEUTRE":
+        # Pente seule avec momentum fort
+        score_total = force_momentum + score_vol
+        direction_finale = direction_pente
+    elif direction_rsi != direction_pente and direction_rsi != "NEUTRE" and direction_pente != "NEUTRE":
+        # Contradiction → signal faible
+        score_total = max(score_rsi, force_momentum)
+        direction_finale = direction_rsi  # RSI prioritaire en cas de contradiction
+    else:
+        score_total = 0
+        direction_finale = "NEUTRE"
+
     score_total = min(score_total, 30)
 
-    print(f"  {symbole} : score {score_total}/30 | RSI {rsi} | Vol {volatilite}% | {direction}")
+    print(f"  {symbole} : score {score_total}/30 | RSI {rsi} ({direction_rsi}) | "
+          f"Pente ({direction_pente}) | Momentum: {momentum} | Vol {volatilite}%")
 
-    return score_total, direction, {
+    return score_total, direction_finale, {
         "rsi": rsi,
+        "direction_rsi": direction_rsi,
+        "direction_pente": direction_pente,
+        "momentum": momentum,
+        "force_momentum": force_momentum,
         "volatilite": volatilite,
         "score_total": score_total,
-        "direction": direction
+        "direction": direction_finale
     }
 
 def choisir_meilleur_marche():
@@ -171,8 +272,9 @@ def choisir_meilleur_marche():
 
     direction = valides[meilleur]["direction"]
     score     = valides[meilleur]["score"]
+    momentum  = valides[meilleur]["details"].get("momentum", "")
 
-    print(f"\n  => CHOIX : {meilleur} ({direction}) — Score {score}/30 ✅")
+    print(f"\n  => CHOIX : {meilleur} ({direction}) — Score {score}/30 | {momentum} ✅")
     return meilleur, direction, valides[meilleur]["details"]
 
 # ══════════════════════════════════════════════════════════════
