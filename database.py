@@ -6,8 +6,8 @@
 """
 
 import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import pg8000
+
 from datetime import datetime
 import logging
 
