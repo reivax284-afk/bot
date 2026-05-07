@@ -37,7 +37,7 @@ KELLY_FRACTION          = 0.25
 KELLY_CAP               = 0.05
 MIN_TRADES_KELLY        = 30
 ATR_MULTIPLIER          = 2.5
-RATIO_RR                = 1.5
+RATIO_RR                = 2.0       # Ratio 1:2
 RATIO_PARTIEL           = 1.0
 PAUSE                   = 120
 CHECK_INTERVAL          = 10
@@ -56,25 +56,35 @@ PAUSE_DUREE             = 86400
 
 # 8 marchés variés pour plus de signaux
 MARCHES = [
-    "BTCUSDT",   # Gros cap stable
-    "ETHUSDT",   # Gros cap stable
-    "BNBUSDT",   # Grosse liquidité
-    "XRPUSDT",   # Très liquide
-    "ADAUSDT",   # Volatile
-    "LINKUSDT",  # Volatile, bon pour mean rev
-    "DOTUSDT",   # Volatile
-    "ATOMUSDT"   # Volatile
+    # 6 marchés confirmés
+    "BTCUSDT",   # WR 78.6%
+    "ETHUSDT",   # WR 64.3%
+    "XRPUSDT",   # WR 75%
+    "ATOMUSDT",  # WR 72.7%
+    "LINKUSDT",  # WR 71.4%
+    "ADAUSDT",   # WR 63.6%
+    # 6 nouveaux marchés à tester
+    "SOLUSDT",   # Très volatile
+    "AVAXUSDT",  # Volatile, grosse liquidité
+    "NEARUSDT",  # Volatile
+    "MATICUSDT", # Polygon
+    "UNIUSDT",   # DeFi volatile
+    "AAVEUSDT"   # DeFi très volatile
 ]
 
 KRAKEN_SYMBOLS = {
-    "BTCUSDT":  "XXBTZUSD",
-    "ETHUSDT":  "XETHZUSD",
-    "BNBUSDT":  "BNBUSD",
-    "XRPUSDT":  "XXRPZUSD",
-    "ADAUSDT":  "ADAUSD",
-    "LINKUSDT": "LINKUSD",
-    "DOTUSDT":  "DOTUSD",
-    "ATOMUSDT": "ATOMUSD"
+    "BTCUSDT":   "XXBTZUSD",
+    "ETHUSDT":   "XETHZUSD",
+    "XRPUSDT":   "XXRPZUSD",
+    "ATOMUSDT":  "ATOMUSD",
+    "LINKUSDT":  "LINKUSD",
+    "ADAUSDT":   "ADAUSD",
+    "SOLUSDT":   "SOLUSD",
+    "AVAXUSDT":  "AVAXUSD",
+    "NEARUSDT":  "NEARUSD",
+    "MATICUSDT": "MATICUSD",
+    "UNIUSDT":   "UNIUSD",
+    "AAVEUSDT":  "AAVEUSD"
 }
 
 log.info("=" * 55)
