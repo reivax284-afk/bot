@@ -1,18 +1,10 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║                    BOT ULTIME V5 — DONCHIAN                  ║
-║         Stratégie Turtle Traders (55/20)                     ║
-║         BTC + ETH | H1 | ATR Stop | Kelly 25%               ║
-║         PostgreSQL Railway | Kill Switch                      ║
+║                BOT ADAPTATIF V6                              ║
+║   TENDANCE  → Stratégie Donchian 55/20                      ║
+║   RANGE     → Stratégie Mean Reversion RSI                   ║
+║   BTC + ETH + SOL | H1 | ATR Stop | Kelly 25%               ║
 ╚══════════════════════════════════════════════════════════════╝
-
-STRATÉGIE DONCHIAN 55/20 :
-- ACHAT  : prix dépasse le plus haut des 55 dernières bougies
-- VENTE  : prix dépasse le plus bas des 55 dernières bougies
-- SORTIE : prix dépasse le plus haut/bas des 20 dernières bougies
-- STOP   : ATR × 2 (protection contre les faux breakouts)
-- FILTRE : ADX > 20 (on ne trade qu'en tendance)
-- FILTRE : Volume > 50% moyenne (liquidité confirmée)
 """
 
 import requests
@@ -23,6 +15,7 @@ import logging
 import pandas as pd
 from ta.trend import ADXIndicator
 from ta.volatility import AverageTrueRange
+from ta.momentum import RSIIndicator
 from datetime import datetime
 from database import init_database, charger_etat, sauvegarder_etat, enregistrer_trade
 
@@ -43,45 +36,52 @@ log = logging.getLogger(__name__)
 
 CAPITAL_INITIAL         = 50.0
 LEVIER                  = 3
-MISE_FIXE_PCT           = 0.01      # 1% fixe avant 30 trades
-KELLY_FRACTION          = 0.25      # Kelly 25% après 30 trades
-KELLY_CAP               = 0.05      # Max 5% du capital
+MISE_FIXE_PCT           = 0.01
+KELLY_FRACTION          = 0.25
+KELLY_CAP               = 0.05
 MIN_TRADES_KELLY        = 30
-ATR_MULTIPLIER          = 2.0       # Stop = ATR × 2
-PAUSE                   = 120       # 2 min entre analyses
-CHECK_INTERVAL          = 10        # Vérification toutes les 10s
-TIMEOUT_TRADE           = 24 * 3600 # 24h max (Donchian = swing)
-ADX_SEUIL               = 20
-VOLUME_MINI             = 0.50
+ATR_MULTIPLIER          = 1.5       # Plus serré que avant
+RATIO_RR                = 2.0       # Ratio 1:2
+PAUSE                   = 120
+CHECK_INTERVAL          = 10
+TIMEOUT_TRADE           = 12 * 3600 # 12h max
 
-# Paramètres Donchian
-DONCHIAN_ENTREE         = 55        # Plus haut/bas sur 55 bougies
-DONCHIAN_SORTIE         = 20        # Sortie sur 20 bougies
+# Seuil ADX pour déterminer le régime
+ADX_TENDANCE            = 25        # > 25 = tendance → Donchian
+ADX_RANGE               = 25        # < 25 = range → Mean Reversion
+VOLUME_MINI             = 0.40      # Légèrement assoupli
+
+# Donchian
+DONCHIAN_ENTREE         = 55
+DONCHIAN_SORTIE         = 20
+
+# Mean Reversion RSI
+RSI_ACHAT               = 30        # RSI < 30 → survendu → ACHAT
+RSI_VENTE               = 70        # RSI > 70 → suracheté → VENTE
 
 # Kill Switch
 MAX_PERTES_CONSECUTIVES = 3
 SEUIL_RUINE             = 0.50
 PAUSE_DUREE             = 86400
 
-MARCHES = ["BTCUSDT", "ETHUSDT"]
+MARCHES = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 KRAKEN_SYMBOLS = {
     "BTCUSDT": "XXBTZUSD",
-    "ETHUSDT": "XETHZUSD"
+    "ETHUSDT": "XETHZUSD",
+    "SOLUSDT": "SOLUSD"
 }
 
 log.info("=" * 55)
-log.info("  BOT ULTIME V5 — STRATÉGIE DONCHIAN (TURTLES)")
-log.info(f"  Capital      : {CAPITAL_INITIAL}EUR")
-log.info(f"  Donchian     : Entrée {DONCHIAN_ENTREE}j | Sortie {DONCHIAN_SORTIE}j")
-log.info(f"  Stop         : ATR × {ATR_MULTIPLIER}")
-log.info(f"  Kelly        : {KELLY_FRACTION*100}% après {MIN_TRADES_KELLY} trades")
-log.info(f"  Kill Switch  : {MAX_PERTES_CONSECUTIVES} pertes → pause 24h")
-log.info(f"  Seuil ruine  : -{(1-SEUIL_RUINE)*100}% capital")
-log.info(f"  Marches      : {', '.join(MARCHES)}")
+log.info("  BOT ADAPTATIF V6")
+log.info(f"  ADX > {ADX_TENDANCE} → TENDANCE → Donchian {DONCHIAN_ENTREE}/{DONCHIAN_SORTIE}")
+log.info(f"  ADX < {ADX_RANGE}  → RANGE    → Mean Reversion RSI {RSI_ACHAT}/{RSI_VENTE}")
+log.info(f"  Stop ATR × {ATR_MULTIPLIER} | Ratio 1:{int(RATIO_RR)}")
+log.info(f"  Kelly {KELLY_FRACTION*100}% après {MIN_TRADES_KELLY} trades")
+log.info(f"  Marches : {', '.join(MARCHES)}")
 log.info("=" * 55)
 
 # ══════════════════════════════════════════════════════════════
-# RÉCUPÉRATION DES DONNÉES
+# DONNÉES
 # ══════════════════════════════════════════════════════════════
 
 def get_prix_actuel(symbole):
@@ -132,10 +132,7 @@ def get_klines(symbole, limite=100):
 
 def calculer_adx(df, periode=14):
     try:
-        ind = ADXIndicator(
-            high=df['high'], low=df['low'],
-            close=df['close'], window=periode
-        )
+        ind = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=periode)
         val = ind.adx().iloc[-1]
         return round(float(val), 2) if not pd.isna(val) else 0
     except:
@@ -143,14 +140,19 @@ def calculer_adx(df, periode=14):
 
 def calculer_atr(df, periode=14):
     try:
-        ind = AverageTrueRange(
-            high=df['high'], low=df['low'],
-            close=df['close'], window=periode
-        )
+        ind = AverageTrueRange(high=df['high'], low=df['low'], close=df['close'], window=periode)
         val = ind.average_true_range().iloc[-1]
         return round(float(val), 8) if not pd.isna(val) else 0
     except:
         return 0
+
+def calculer_rsi(df, periode=14):
+    try:
+        ind = RSIIndicator(close=df['close'], window=periode)
+        val = ind.rsi().iloc[-1]
+        return round(float(val), 2) if not pd.isna(val) else 50
+    except:
+        return 50
 
 def verifier_volume(df):
     volumes = df['volume'].tolist()
@@ -162,105 +164,115 @@ def verifier_volume(df):
     return ratio >= VOLUME_MINI, round(ratio * 100, 1)
 
 # ══════════════════════════════════════════════════════════════
-# STRATÉGIE DONCHIAN 55/20
+# ANALYSE ADAPTATIVE
 # ══════════════════════════════════════════════════════════════
 
-def analyser_donchian(symbole):
+def analyser_marche(symbole):
     """
-    Stratégie Turtle Traders :
-    - ACHAT  : clôture > plus haut des 55 dernières bougies
-    - VENTE  : clôture < plus bas des 55 dernières bougies
-    - Filtres : ADX > 20 + Volume > 50%
+    Détecte le régime de marché et applique la bonne stratégie :
+    - ADX > 25 → TENDANCE → Donchian breakout
+    - ADX < 25 → RANGE    → Mean Reversion RSI
     """
     df = get_klines(symbole, limite=100)
-    if df is None or len(df) < DONCHIAN_ENTREE + 5:
+    if df is None or len(df) < 60:
         log.warning(f"  {symbole} : données insuffisantes")
-        return "NEUTRE", {}
+        return "NEUTRE", {}, "N/A"
 
-    # Filtres
+    # Indicateurs
     adx = calculer_adx(df)
-    if adx < ADX_SEUIL:
-        log.info(f"  {symbole} : ADX {adx} < {ADX_SEUIL} → RANGE → pas de trade")
-        return "NEUTRE", {"adx": adx}
+    atr = calculer_atr(df)
+    rsi = calculer_rsi(df)
 
     volume_ok, volume_ratio = verifier_volume(df)
     if not volume_ok:
-        log.info(f"  {symbole} : Volume {volume_ratio}% < 50% → pas de trade")
-        return "NEUTRE", {"adx": adx}
+        log.info(f"  {symbole} : Volume {volume_ratio}% < {VOLUME_MINI*100}% → pas de trade")
+        return "NEUTRE", {}, "N/A"
 
-    # Calcul Donchian
-    atr          = calculer_atr(df)
-    prix_actuel  = df['close'].iloc[-1]
-
-    # Plus haut et plus bas sur 55 bougies (sans la dernière)
-    plus_haut_55 = df['high'].iloc[-DONCHIAN_ENTREE-1:-1].max()
-    plus_bas_55  = df['low'].iloc[-DONCHIAN_ENTREE-1:-1].min()
-
-    # Niveaux de sortie sur 20 bougies
-    sortie_haut  = df['high'].iloc[-DONCHIAN_SORTIE-1:-1].max()
-    sortie_bas   = df['low'].iloc[-DONCHIAN_SORTIE-1:-1].min()
-
-    atr_pct = (atr / prix_actuel) * 100
-
-    log.info(f"  {symbole} : ADX {adx} | Vol {volume_ratio}% | "
-             f"Prix {round(prix_actuel,4)} | "
-             f"H55 {round(plus_haut_55,4)} | B55 {round(plus_bas_55,4)} | "
-             f"ATR {round(atr_pct,2)}%")
+    prix     = df['close'].iloc[-1]
+    atr_pct  = (atr / prix) * 100
 
     details = {
-        "adx": adx,
-        "volume_ratio": volume_ratio,
-        "atr": atr,
-        "atr_pct": atr_pct,
-        "plus_haut_55": plus_haut_55,
-        "plus_bas_55": plus_bas_55,
-        "sortie_haut": sortie_haut,
-        "sortie_bas": sortie_bas,
-        "prix_actuel": prix_actuel,
+        "adx": adx, "atr": atr, "rsi": rsi,
+        "atr_pct": atr_pct, "volume_ratio": volume_ratio,
         "df": df
     }
 
-    # Signal Donchian
-    if prix_actuel > plus_haut_55:
-        log.info(f"  {symbole} : BREAKOUT HAUSSIER ! "
-                 f"{round(prix_actuel,4)} > H55 {round(plus_haut_55,4)} → ACHAT")
-        return "ACHAT", details
+    # ── RÉGIME TENDANCE → Donchian ──
+    if adx >= ADX_TENDANCE:
+        plus_haut_55 = df['high'].iloc[-DONCHIAN_ENTREE-1:-1].max()
+        plus_bas_55  = df['low'].iloc[-DONCHIAN_ENTREE-1:-1].min()
+        sortie_haut  = df['high'].iloc[-DONCHIAN_SORTIE-1:-1].max()
+        sortie_bas   = df['low'].iloc[-DONCHIAN_SORTIE-1:-1].min()
 
-    elif prix_actuel < plus_bas_55:
-        log.info(f"  {symbole} : BREAKOUT BAISSIER ! "
-                 f"{round(prix_actuel,4)} < B55 {round(plus_bas_55,4)} → VENTE")
-        return "VENTE", details
+        details.update({
+            "strategie": "DONCHIAN",
+            "plus_haut_55": plus_haut_55,
+            "plus_bas_55": plus_bas_55,
+            "sortie_haut": sortie_haut,
+            "sortie_bas": sortie_bas
+        })
 
+        if prix > plus_haut_55:
+            log.info(f"  {symbole} [TENDANCE] : BREAKOUT HAUSSIER ! "
+                     f"ADX {adx} | ATR {round(atr_pct,2)}% → ACHAT Donchian")
+            return "ACHAT", details, "DONCHIAN"
+
+        elif prix < plus_bas_55:
+            log.info(f"  {symbole} [TENDANCE] : BREAKOUT BAISSIER ! "
+                     f"ADX {adx} | ATR {round(atr_pct,2)}% → VENTE Donchian")
+            return "VENTE", details, "DONCHIAN"
+
+        else:
+            log.info(f"  {symbole} [TENDANCE] : ADX {adx} | Prix dans canal → pas de breakout")
+            return "NEUTRE", details, "DONCHIAN"
+
+    # ── RÉGIME RANGE → Mean Reversion ──
     else:
-        log.info(f"  {symbole} : Prix dans le canal Donchian → pas de signal")
-        return "NEUTRE", details
+        details["strategie"] = "MEAN_REVERSION"
+
+        if rsi < RSI_ACHAT:
+            log.info(f"  {symbole} [RANGE] : RSI {rsi} < {RSI_ACHAT} → SURVENDU → ACHAT Mean Rev")
+            return "ACHAT", details, "MEAN_REVERSION"
+
+        elif rsi > RSI_VENTE:
+            log.info(f"  {symbole} [RANGE] : RSI {rsi} > {RSI_VENTE} → SURACHETÉ → VENTE Mean Rev")
+            return "VENTE", details, "MEAN_REVERSION"
+
+        else:
+            log.info(f"  {symbole} [RANGE] : ADX {adx} | RSI {rsi} → pas de signal")
+            return "NEUTRE", details, "MEAN_REVERSION"
 
 def choisir_meilleur_marche():
-    log.info(f"\n[{datetime.now().strftime('%H:%M:%S')}] Analyse Donchian des marches...")
+    log.info(f"\n[{datetime.now().strftime('%H:%M:%S')}] Analyse adaptative des marches...")
     signaux = {}
 
     for marche in MARCHES:
-        direction, details = analyser_donchian(marche)
+        direction, details, strategie = analyser_marche(marche)
         if direction != "NEUTRE":
-            signaux[marche] = {"direction": direction, "details": details}
+            signaux[marche] = {
+                "direction": direction,
+                "details": details,
+                "strategie": strategie
+            }
         time.sleep(1)
 
     if not signaux:
-        log.info("  => Aucun breakout Donchian. On attend...")
-        return None, "NEUTRE", {}
+        log.info("  => Aucun signal valide. On attend...")
+        return None, "NEUTRE", {}, "N/A"
 
-    # Priorité : ATR le plus élevé (mouvement le plus fort)
+    # Priorité : ATR le plus élevé
     meilleur  = max(signaux, key=lambda x: signaux[x]["details"].get("atr_pct", 0))
     direction = signaux[meilleur]["direction"]
+    strategie = signaux[meilleur]["strategie"]
     atr_pct   = signaux[meilleur]["details"].get("atr_pct", 0)
     adx       = signaux[meilleur]["details"].get("adx", 0)
 
-    log.info(f"\n  => BREAKOUT : {meilleur} ({direction})")
+    log.info(f"\n  => SIGNAL : {meilleur} ({direction}) — Stratégie : {strategie}")
     log.info(f"     ADX {adx} | ATR {round(atr_pct,2)}%")
-    return meilleur, direction, signaux[meilleur]["details"]
+    return meilleur, direction, signaux[meilleur]["details"], strategie
 
 # ══════════════════════════════════════════════════════════════
-# KELLY FRACTIONNÉ
+# KELLY
 # ══════════════════════════════════════════════════════════════
 
 def calculer_mise(capital, nb_trades, win_rate, avg_win_pct, avg_loss_pct):
@@ -282,49 +294,60 @@ def calculer_mise(capital, nb_trades, win_rate, avg_win_pct, avg_loss_pct):
     return round(mise, 2)
 
 # ══════════════════════════════════════════════════════════════
-# SIMULATION DU TRADE DONCHIAN
+# SIMULATION DU TRADE
 # ══════════════════════════════════════════════════════════════
 
-def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
+def simuler_trade(symbole, direction, numero_trade, capital, details, strategie, etat):
     prix_entree = get_prix_actuel(symbole)
     if prix_entree is None:
         return "ERREUR", 0, 0, {}
 
-    atr         = details.get("atr", 0)
-    sortie_haut = details.get("sortie_haut", 0)
-    sortie_bas  = details.get("sortie_bas", 0)
+    atr = details.get("atr", 0)
+    df  = details.get("df")
 
-    # Stop ATR × 2
+    # Stop ATR × 1.5
     if direction == "ACHAT":
-        stop_loss     = round(prix_entree - (atr * ATR_MULTIPLIER), 8)
-        prix_sortie_d = sortie_bas   # Sortie Donchian si prix < plus bas 20
+        stop_loss = round(prix_entree - (atr * ATR_MULTIPLIER), 8)
     else:
-        stop_loss     = round(prix_entree + (atr * ATR_MULTIPLIER), 8)
-        prix_sortie_d = sortie_haut  # Sortie Donchian si prix > plus haut 20
+        stop_loss = round(prix_entree + (atr * ATR_MULTIPLIER), 8)
 
     distance_stop     = abs(prix_entree - stop_loss)
     distance_stop_pct = (distance_stop / prix_entree) * 100
 
+    # Objectif selon stratégie
+    if strategie == "DONCHIAN":
+        # Sortie Donchian (breakout inverse 20 bougies)
+        if direction == "ACHAT":
+            prix_objectif = details.get("sortie_bas", prix_entree - distance_stop * RATIO_RR)
+        else:
+            prix_objectif = details.get("sortie_haut", prix_entree + distance_stop * RATIO_RR)
+    else:
+        # Mean Reversion → retour à la moyenne (ratio 1:2)
+        if direction == "ACHAT":
+            prix_objectif = round(prix_entree + (distance_stop * RATIO_RR), 8)
+        else:
+            prix_objectif = round(prix_entree - (distance_stop * RATIO_RR), 8)
+
     win_rate = etat["nb_wins"] / etat["nb_trades"] if etat["nb_trades"] > 0 else 0.50
-    avg_win  = etat["avg_win_pct"] if etat["avg_win_pct"] > 0 else distance_stop_pct * 2
+    avg_win  = etat["avg_win_pct"] if etat["avg_win_pct"] > 0 else distance_stop_pct * RATIO_RR
     avg_loss = etat["avg_loss_pct"] if etat["avg_loss_pct"] > 0 else distance_stop_pct
     mise     = calculer_mise(capital, etat["nb_trades"], win_rate, avg_win, avg_loss)
 
     log.info(f"\n  {'='*50}")
-    log.info(f"  TRADE #{numero_trade} — {datetime.now().strftime('%H:%M:%S')}")
+    log.info(f"  TRADE #{numero_trade} [{strategie}] — {datetime.now().strftime('%H:%M:%S')}")
     log.info(f"  {'='*50}")
     log.info(f"  Symbole        : {symbole} ({direction})")
+    log.info(f"  Stratégie      : {strategie}")
     log.info(f"  Prix entree    : {prix_entree}")
-    log.info(f"  Stop ATR×2     : {stop_loss} ({round(distance_stop_pct,2)}%)")
-    log.info(f"  Sortie Donchian: {prix_sortie_d} (plus haut/bas 20j)")
-    log.info(f"  Mise           : {mise}EUR | Levier x{LEVIER}")
-    log.info(f"  Timeout        : 24h\n")
+    log.info(f"  Stop ATR×{ATR_MULTIPLIER}   : {stop_loss} ({round(distance_stop_pct,2)}%)")
+    log.info(f"  Objectif       : {prix_objectif}")
+    log.info(f"  Mise           : {mise}EUR | Levier x{LEVIER}\n")
 
     debut         = time.time()
     stop_actuel   = stop_loss
     meilleur_prix = prix_entree
     dernier_log   = 0
-    prix_cloture  = prix_entree
+    prix_sortie   = prix_entree
 
     while True:
         time.sleep(CHECK_INTERVAL)
@@ -333,27 +356,27 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
         if prix_actuel is None:
             continue
 
-        prix_cloture = prix_actuel
+        prix_sortie = prix_actuel
 
-        # Trailing Stop Donchian
         if direction == "ACHAT":
+            # Trailing stop
             if prix_actuel > meilleur_prix:
                 meilleur_prix = prix_actuel
                 nouveau_stop  = round(meilleur_prix - distance_stop, 8)
                 if nouveau_stop > stop_actuel:
                     stop_actuel = nouveau_stop
-            pnl          = round((prix_actuel - prix_entree) / prix_entree * mise * LEVIER, 2)
-            sortie_don   = prix_actuel < prix_sortie_d  # Sortie si prix < bas 20j
-            atteint_stop = prix_actuel <= stop_actuel
+            pnl              = round((prix_actuel - prix_entree) / prix_entree * mise * LEVIER, 2)
+            atteint_objectif = prix_actuel >= prix_objectif
+            atteint_stop     = prix_actuel <= stop_actuel
         else:
             if prix_actuel < meilleur_prix:
                 meilleur_prix = prix_actuel
                 nouveau_stop  = round(meilleur_prix + distance_stop, 8)
                 if nouveau_stop < stop_actuel:
                     stop_actuel = nouveau_stop
-            pnl          = round((prix_entree - prix_actuel) / prix_entree * mise * LEVIER, 2)
-            sortie_don   = prix_actuel > prix_sortie_d  # Sortie si prix > haut 20j
-            atteint_stop = prix_actuel >= stop_actuel
+            pnl              = round((prix_entree - prix_actuel) / prix_entree * mise * LEVIER, 2)
+            atteint_objectif = prix_actuel <= prix_objectif
+            atteint_stop     = prix_actuel >= stop_actuel
 
         duree = int((time.time() - debut) / 60)
 
@@ -365,25 +388,23 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
 
         trade_info = {
             "prix_entree":   prix_entree,
-            "prix_sortie":   prix_cloture,
+            "prix_sortie":   prix_sortie,
             "stop_loss":     stop_loss,
-            "objectif":      prix_sortie_d,
-            "duree_minutes": duree
+            "objectif":      prix_objectif,
+            "duree_minutes": duree,
+            "strategie":     strategie
         }
 
-        # Sortie Donchian (signal de retournement)
-        if sortie_don:
-            log.info(f"\n  SORTIE DONCHIAN ! {'+' if pnl >= 0 else ''}{pnl}EUR")
-            return ("GAGNE" if pnl > 0 else "PERDU"), pnl, mise, trade_info
+        if atteint_objectif:
+            log.info(f"\n  OBJECTIF ATTEINT [{strategie}] ! +{pnl}EUR")
+            return "GAGNE", pnl, mise, trade_info
 
-        # Stop-loss ATR
         if atteint_stop:
-            log.info(f"\n  STOP-LOSS ATR ! {pnl}EUR")
+            log.info(f"\n  STOP-LOSS ATTEINT ! {pnl}EUR")
             return "PERDU", pnl, mise, trade_info
 
-        # Timeout 24h
         if time.time() - debut >= TIMEOUT_TRADE:
-            log.info(f"\n  TIMEOUT 24H — Fermeture : {'+' if pnl >= 0 else ''}{pnl}EUR")
+            log.info(f"\n  TIMEOUT — Fermeture : {'+' if pnl >= 0 else ''}{pnl}EUR")
             return ("GAGNE" if pnl > 0 else "PERDU"), pnl, mise, trade_info
 
 # ══════════════════════════════════════════════════════════════
@@ -419,7 +440,7 @@ def afficher_tableau_de_bord(etat):
     win_rate = (etat["nb_wins"] / etat["nb_trades"] * 100) if etat["nb_trades"] > 0 else 0
     perf     = ((etat["capital"] - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100)
     log.info(f"\n  {'='*55}")
-    log.info(f"  BOT V5 DONCHIAN — TABLEAU DE BORD")
+    log.info(f"  BOT ADAPTATIF V6 — TABLEAU DE BORD")
     log.info(f"  {'='*55}")
     log.info(f"  Capital actuel : {round(etat['capital'],2)}EUR "
              f"({'+' if perf >= 0 else ''}{round(perf,2)}%)")
@@ -427,6 +448,7 @@ def afficher_tableau_de_bord(etat):
     log.info(f"  Victoires      : {etat['nb_wins']} ({win_rate:.1f}%)")
     log.info(f"  Defaites       : {etat['nb_losses']}")
     log.info(f"  Pertes consec. : {etat['pertes_consecutives']}/{MAX_PERTES_CONSECUTIVES}")
+    log.info(f"  Kelly actif    : {'Non (<30 trades)' if etat['nb_trades'] < MIN_TRADES_KELLY else 'Oui'}")
     log.info(f"  Total gagne    : +{round(etat['total_gagne'],2)}EUR")
     log.info(f"  Total perdu    : -{round(etat['total_perdu'],2)}EUR")
     log.info(f"  BENEFICE NET   : {'+' if etat['cumul_net'] >= 0 else ''}{round(etat['cumul_net'],2)}EUR")
@@ -445,7 +467,7 @@ def afficher_tableau_de_bord(etat):
 # ══════════════════════════════════════════════════════════════
 
 def demarrer_bot():
-    log.info(f"DEMARRAGE BOT V5 DONCHIAN — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log.info(f"DEMARRAGE BOT ADAPTATIF V6 — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     init_database()
     etat = charger_etat()
@@ -460,7 +482,7 @@ def demarrer_bot():
                 etat = charger_etat()
                 continue
 
-            symbole, direction, details = choisir_meilleur_marche()
+            symbole, direction, details, strategie = choisir_meilleur_marche()
 
             if direction == "NEUTRE" or symbole is None:
                 etat["nb_skips"] += 1
@@ -472,7 +494,7 @@ def demarrer_bot():
             etat["nb_trades"] += 1
             resultat, gain, mise, trade_info = simuler_trade(
                 symbole, direction, etat["nb_trades"],
-                etat["capital"], details, etat
+                etat["capital"], details, strategie, etat
             )
 
             if resultat == "ERREUR":
@@ -521,11 +543,10 @@ def demarrer_bot():
                 'score':         None,
                 'adx':           details.get('adx'),
                 'atr':           details.get('atr'),
-                'rsi':           None,
+                'rsi':           details.get('rsi'),
             })
 
             sauvegarder_etat(etat)
-
             etat['historique'].append({
                 'heure':     datetime.now().strftime('%Y-%m-%d %H:%M'),
                 'marche':    symbole,
@@ -537,7 +558,6 @@ def demarrer_bot():
             })
 
             afficher_tableau_de_bord(etat)
-
             log.info(f"  Pause 2 minutes avant prochain trade...")
             time.sleep(PAUSE)
 
