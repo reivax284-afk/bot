@@ -488,6 +488,15 @@ def demarrer_bot():
 
     init_database()
     etat = charger_etat()
+
+    # Si 0 trades et capital différent du capital configuré → réinitialisation
+    if etat["nb_trades"] == 0 and etat["capital"] != CAPITAL_INITIAL:
+        log.warning(f"Capital PostgreSQL ({etat['capital']}EUR) != {CAPITAL_INITIAL}EUR → Reset")
+        etat["capital"]   = CAPITAL_INITIAL
+        etat["cumul_net"] = 0.0
+        sauvegarder_etat(etat)
+        log.info(f"Capital réinitialisé à {CAPITAL_INITIAL}EUR ✅")
+
     afficher_tableau_de_bord(etat)
 
     while True:
