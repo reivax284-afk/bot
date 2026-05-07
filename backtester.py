@@ -1,9 +1,8 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║           BACKTESTER MEAN REVERSION V7                       ║
+║           BACKTESTER MEAN REVERSION V7.1                     ║
+║   Ratio 1:2 | 12 marchés | Nouveaux marchés testés          ║
 ║   RSI < 30 → ACHAT | RSI > 70 → VENTE                      ║
-║   8 marchés | H1 | Stop ATR×2.5 | Ratio 1:1.5              ║
-║   Sortie partielle 50% | Frais réels                         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -18,7 +17,7 @@ CAPITAL_INITIAL  = 50.0
 LEVIER           = 3
 MISE_PCT         = 0.01
 ATR_MULTIPLIER   = 2.5
-RATIO_RR         = 1.5
+RATIO_RR         = 2.0       # Augmenté à 1:2
 RATIO_PARTIEL    = 1.0
 RSI_ACHAT        = 30
 RSI_VENTE        = 70
@@ -28,19 +27,37 @@ FRAIS_PCT        = 0.0004
 SLIPPAGE_PCT     = 0.0002
 TIMEOUT_BOUGIES  = 12
 
+# 12 marchés — les 6 meilleurs + 6 nouveaux à tester
 MARCHES = [
-    "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT",
-    "ADAUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT"
+    # Les 6 meilleurs confirmés
+    "BTCUSDT",   # WR 78.6%
+    "ETHUSDT",   # WR 64.3%
+    "XRPUSDT",   # WR 75%
+    "ATOMUSDT",  # WR 72.7% +0.07€
+    "LINKUSDT",  # WR 71.4% +0.14€
+    "ADAUSDT",   # WR 63.6%
+    # 6 nouveaux à tester
+    "SOLUSDT",   # Très volatile, bon candidat
+    "AVAXUSDT",  # Volatile, grosse liquidité
+    "NEARUSDT",  # Volatile, moins connu
+    "MATICUSDT", # Polygon, bon volume
+    "UNIUSDT",   # DeFi, volatile
+    "AAVEUSDT"   # DeFi, très volatile
 ]
+
 KRAKEN_SYMBOLS = {
-    "BTCUSDT":  "XXBTZUSD",
-    "ETHUSDT":  "XETHZUSD",
-    "BNBUSDT":  "BNBUSD",
-    "XRPUSDT":  "XXRPZUSD",
-    "ADAUSDT":  "ADAUSD",
-    "LINKUSDT": "LINKUSD",
-    "DOTUSDT":  "DOTUSD",
-    "ATOMUSDT": "ATOMUSD"
+    "BTCUSDT":   "XXBTZUSD",
+    "ETHUSDT":   "XETHZUSD",
+    "XRPUSDT":   "XXRPZUSD",
+    "ATOMUSDT":  "ATOMUSD",
+    "LINKUSDT":  "LINKUSD",
+    "ADAUSDT":   "ADAUSD",
+    "SOLUSDT":   "SOLUSD",
+    "AVAXUSDT":  "AVAXUSD",
+    "NEARUSDT":  "NEARUSD",
+    "MATICUSDT": "MATICUSD",
+    "UNIUSDT":   "UNIUSD",
+    "AAVEUSDT":  "AAVEUSD"
 }
 
 def get_data(symbole):
@@ -81,7 +98,7 @@ def ajouter_indicateurs(df):
     df['vol_ratio'] = df['volume'] / df['vol_moy']
     return df.dropna()
 
-def backtest_mean_reversion(df, symbole):
+def backtest(df, symbole):
     trades   = []
     capital  = CAPITAL_INITIAL
     i        = 20
@@ -90,7 +107,6 @@ def backtest_mean_reversion(df, symbole):
     while i < len(df) - TIMEOUT_BOUGIES - 2:
         row = df.iloc[i]
 
-        # Filtres
         if row['vol_ratio'] < VOLUME_MINI:
             i += 1
             continue
@@ -116,13 +132,13 @@ def backtest_mean_reversion(df, symbole):
         distance_stop = atr * ATR_MULTIPLIER
 
         if signal == "ACHAT":
-            stop_loss    = prix - distance_stop
-            obj_partiel  = prix + (distance_stop * RATIO_PARTIEL)
-            obj_final    = prix + (distance_stop * RATIO_RR)
+            stop_loss   = prix - distance_stop
+            obj_partiel = prix + (distance_stop * RATIO_PARTIEL)
+            obj_final   = prix + (distance_stop * RATIO_RR)
         else:
-            stop_loss    = prix + distance_stop
-            obj_partiel  = prix - (distance_stop * RATIO_PARTIEL)
-            obj_final    = prix - (distance_stop * RATIO_RR)
+            stop_loss   = prix + distance_stop
+            obj_partiel = prix - (distance_stop * RATIO_PARTIEL)
+            obj_final   = prix - (distance_stop * RATIO_RR)
 
         partiel_fait = False
         gain_partiel = 0
@@ -206,7 +222,6 @@ def afficher(trades, capital_final, symbole):
     perf     = (capital_final - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100
     avg_win  = df_t[df_t['resultat']=='GAGNE']['gain'].mean() if wins > 0 else 0
     avg_loss = df_t[df_t['resultat']=='PERDU']['gain'].mean() if losses > 0 else 0
-    nb_part  = len(df_t[df_t['partiel'] == True])
 
     capitals = [CAPITAL_INITIAL] + [t['capital'] for t in trades]
     peak = CAPITAL_INITIAL
@@ -219,76 +234,79 @@ def afficher(trades, capital_final, symbole):
     jours = (pd.to_datetime(trades[-1]['date']) - pd.to_datetime(trades[0]['date'])).days
     sem   = nb / max(jours / 7, 1)
 
-    print(f"\n  {'='*55}")
-    print(f"  RÉSULTATS MEAN REV V7 — {symbole}")
-    print(f"  {'='*55}")
-    print(f"  Période        : {jours} jours")
-    print(f"  Trades         : {nb} ({round(sem,1)}/semaine)")
-    print(f"  Victoires      : {wins} ({round(win_rate,1)}%)")
-    print(f"  Défaites       : {losses}")
-    print(f"  Sortie partiel : {nb_part} trades")
-    print(f"  Gain moyen win : +{round(avg_win,2)}EUR")
-    print(f"  Perte moyenne  : {round(avg_loss,2)}EUR")
-    print(f"  Capital final  : {round(capital_final,2)}EUR")
-    print(f"  Performance    : {'+' if perf>=0 else ''}{round(perf,1)}%")
-    print(f"  Gain total net : {'+' if gain_tot>=0 else ''}{round(gain_tot,2)}EUR")
-    print(f"  Drawdown max   : {round(max_dd,1)}%")
-    print(f"  {'='*55}")
+    statut = "✅ POSITIF" if gain_tot > 0 else "❌ NEGATIF"
 
-    print(f"\n  Tous les trades :")
-    for t in trades:
-        icone   = "✅" if t['resultat'] == "GAGNE" else "❌"
-        partiel = "P" if t['partiel'] else " "
-        print(f"    {icone}{partiel} {t['date']} | {t['signal']:5} | "
-              f"RSI {t['rsi']:5} | ADX {t['adx']:5} | "
-              f"{'+' if t['gain']>=0 else ''}{t['gain']}EUR | "
-              f"{t['duree_h']}h | {t['capital']}EUR")
+    print(f"\n  {'='*55}")
+    print(f"  {statut} — {symbole}")
+    print(f"  Trades : {nb} ({round(sem,1)}/sem) | WR : {round(win_rate,1)}%")
+    print(f"  Perf   : {'+' if perf>=0 else ''}{round(perf,2)}% | "
+          f"Gain : {'+' if gain_tot>=0 else ''}{round(gain_tot,2)}EUR | "
+          f"DD : {round(max_dd,1)}%")
+    print(f"  Avg win: +{round(avg_win,2)}EUR | Avg loss: {round(avg_loss,2)}EUR")
+    print(f"  {'='*55}")
 
     return {
         'symbole': symbole, 'nb_trades': nb,
         'trades_semaine': round(sem, 1),
         'win_rate': round(win_rate, 1),
-        'performance': round(perf, 1),
+        'performance': round(perf, 2),
         'gain_total': round(gain_tot, 2),
-        'drawdown_max': round(max_dd, 1)
+        'drawdown_max': round(max_dd, 1),
+        'nouveau': symbole in ["SOLUSDT","AVAXUSDT","NEARUSDT","MATICUSDT","UNIUSDT","AAVEUSDT"]
     }
 
 def main():
     print("=" * 55)
-    print("  BACKTESTER MEAN REVERSION V7")
-    print(f"  RSI < {RSI_ACHAT} → ACHAT | RSI > {RSI_VENTE} → VENTE")
-    print(f"  ADX max {ADX_MAX} | Stop ATR×{ATR_MULTIPLIER} | Ratio 1:{RATIO_RR}")
-    print(f"  Partiel 50% à 1:{RATIO_PARTIEL} | {len(MARCHES)} marchés")
+    print("  BACKTESTER MEAN REVERSION V7.1")
+    print(f"  Ratio 1:{RATIO_RR} | Stop ATR×{ATR_MULTIPLIER}")
+    print(f"  {len(MARCHES)} marchés (6 confirmés + 6 nouveaux)")
     print("=" * 55)
 
     resultats = []
     for symbole in MARCHES:
         df = get_data(symbole)
         if df is None or len(df) < 50:
-            print(f"  Skip {symbole}")
+            print(f"  Skip {symbole} — données insuffisantes")
             continue
         df = ajouter_indicateurs(df)
-        print(f"  {len(df)} bougies valides")
-        trades, capital = backtest_mean_reversion(df, symbole)
+        trades, capital = backtest(df, symbole)
         result = afficher(trades, capital, symbole)
         if result:
             resultats.append(result)
         time.sleep(1)
 
     if resultats:
-        print(f"\n  {'='*55}")
-        print(f"  SYNTHÈSE GLOBALE MEAN REVERSION V7")
-        print(f"  {'='*55}")
-        print(f"  {'Marché':10} | {'Trades':6} | {'T/sem':5} | {'WR':6} | {'Perf':6} | {'DD':6}")
-        print(f"  {'-'*55}")
-        for r in sorted(resultats, key=lambda x: x['performance'], reverse=True):
-            print(f"  {r['symbole']:10} | {r['nb_trades']:6} | "
-                  f"{r['trades_semaine']:5} | {r['win_rate']:5}% | "
+        print(f"\n  {'='*60}")
+        print(f"  SYNTHÈSE GLOBALE — RATIO 1:{RATIO_RR}")
+        print(f"  {'='*60}")
+        print(f"  {'Marché':10} | {'T':3} | {'T/s':4} | {'WR':6} | {'Perf':7} | {'DD':5} | Statut")
+        print(f"  {'-'*60}")
+
+        confirmes = [r for r in resultats if not r['nouveau']]
+        nouveaux  = [r for r in resultats if r['nouveau']]
+
+        print(f"  --- MARCHÉS CONFIRMÉS ---")
+        for r in sorted(confirmes, key=lambda x: x['performance'], reverse=True):
+            statut = "✅" if r['performance'] > 0 else "❌"
+            print(f"  {r['symbole']:10} | {r['nb_trades']:3} | "
+                  f"{r['trades_semaine']:4} | {r['win_rate']:5}% | "
                   f"{'+' if r['performance']>=0 else ''}{r['performance']:5}% | "
-                  f"{r['drawdown_max']:5}%")
-        print(f"  {'='*55}")
-        print(f"\n  Meilleur marché : {max(resultats, key=lambda x: x['performance'])['symbole']}")
-        print(f"  Meilleur WR     : {max(resultats, key=lambda x: x['win_rate'])['symbole']}")
+                  f"{r['drawdown_max']:4}% | {statut}")
+
+        print(f"  --- NOUVEAUX MARCHÉS ---")
+        for r in sorted(nouveaux, key=lambda x: x['performance'], reverse=True):
+            statut = "✅ NOUVEAU" if r['performance'] > 0 else "❌"
+            print(f"  {r['symbole']:10} | {r['nb_trades']:3} | "
+                  f"{r['trades_semaine']:4} | {r['win_rate']:5}% | "
+                  f"{'+' if r['performance']>=0 else ''}{r['performance']:5}% | "
+                  f"{r['drawdown_max']:4}% | {statut}")
+
+        print(f"  {'='*60}")
+        top3 = sorted(resultats, key=lambda x: x['performance'], reverse=True)[:3]
+        print(f"\n  TOP 3 MEILLEURS MARCHÉS :")
+        for i, r in enumerate(top3, 1):
+            print(f"  {i}. {r['symbole']} → WR {r['win_rate']}% | "
+                  f"Perf {'+' if r['performance']>=0 else ''}{r['performance']}%")
 
 if __name__ == "__main__":
     main()
