@@ -1,10 +1,18 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║                    BOT ULTIME V4.2                           ║
-║     BTC + ETH | H1 | ADX/ATR/RSI pro via ta                 ║
-║     Kelly après 30 trades | Score 18/30 | Trailing Stop      ║
-║     PostgreSQL Railway | Pause persistante | Kill Switch      ║
+║                    BOT ULTIME V5 — DONCHIAN                  ║
+║         Stratégie Turtle Traders (55/20)                     ║
+║         BTC + ETH | H1 | ATR Stop | Kelly 25%               ║
+║         PostgreSQL Railway | Kill Switch                      ║
 ╚══════════════════════════════════════════════════════════════╝
+
+STRATÉGIE DONCHIAN 55/20 :
+- ACHAT  : prix dépasse le plus haut des 55 dernières bougies
+- VENTE  : prix dépasse le plus bas des 55 dernières bougies
+- SORTIE : prix dépasse le plus haut/bas des 20 dernières bougies
+- STOP   : ATR × 2 (protection contre les faux breakouts)
+- FILTRE : ADX > 20 (on ne trade qu'en tendance)
+- FILTRE : Volume > 50% moyenne (liquidité confirmée)
 """
 
 import requests
@@ -15,7 +23,6 @@ import logging
 import pandas as pd
 from ta.trend import ADXIndicator
 from ta.volatility import AverageTrueRange
-from ta.momentum import RSIIndicator
 from datetime import datetime
 from database import init_database, charger_etat, sauvegarder_etat, enregistrer_trade
 
@@ -36,20 +43,22 @@ log = logging.getLogger(__name__)
 
 CAPITAL_INITIAL         = 50.0
 LEVIER                  = 3
-RISQUE_PAR_TRADE        = 0.01
-ATR_MULTIPLIER          = 2.0
-RATIO_RR                = 2.0
-ATR_PERIODE             = 14
-KELLY_FRACTION          = 0.25
-KELLY_CAP               = 0.05
-MISE_FIXE_PCT           = 0.01
+MISE_FIXE_PCT           = 0.01      # 1% fixe avant 30 trades
+KELLY_FRACTION          = 0.25      # Kelly 25% après 30 trades
+KELLY_CAP               = 0.05      # Max 5% du capital
 MIN_TRADES_KELLY        = 30
-PAUSE                   = 120
+ATR_MULTIPLIER          = 2.0       # Stop = ATR × 2
+PAUSE                   = 120       # 2 min entre analyses
+CHECK_INTERVAL          = 10        # Vérification toutes les 10s
+TIMEOUT_TRADE           = 24 * 3600 # 24h max (Donchian = swing)
 ADX_SEUIL               = 20
 VOLUME_MINI             = 0.50
-SCORE_MIN               = 18
-TIMEOUT_TRADE           = 6 * 3600
-CHECK_INTERVAL          = 10
+
+# Paramètres Donchian
+DONCHIAN_ENTREE         = 55        # Plus haut/bas sur 55 bougies
+DONCHIAN_SORTIE         = 20        # Sortie sur 20 bougies
+
+# Kill Switch
 MAX_PERTES_CONSECUTIVES = 3
 SEUIL_RUINE             = 0.50
 PAUSE_DUREE             = 86400
@@ -61,16 +70,14 @@ KRAKEN_SYMBOLS = {
 }
 
 log.info("=" * 55)
-log.info("  BOT ULTIME V4.2")
-log.info(f"  Capital     : {CAPITAL_INITIAL}EUR")
-log.info(f"  Risque/trade: {RISQUE_PAR_TRADE*100}% du capital")
-log.info(f"  Kelly apres : {MIN_TRADES_KELLY} trades")
-log.info(f"  ATR x{ATR_MULTIPLIER} | Ratio 1:{int(RATIO_RR)}")
-log.info(f"  Score min   : {SCORE_MIN}/30")
-log.info(f"  Kill Switch : {MAX_PERTES_CONSECUTIVES} pertes → pause 24h")
-log.info(f"  Seuil ruine : -{(1-SEUIL_RUINE)*100}% capital")
-log.info(f"  Persistance : PostgreSQL Railway")
-log.info(f"  Marches     : {', '.join(MARCHES)}")
+log.info("  BOT ULTIME V5 — STRATÉGIE DONCHIAN (TURTLES)")
+log.info(f"  Capital      : {CAPITAL_INITIAL}EUR")
+log.info(f"  Donchian     : Entrée {DONCHIAN_ENTREE}j | Sortie {DONCHIAN_SORTIE}j")
+log.info(f"  Stop         : ATR × {ATR_MULTIPLIER}")
+log.info(f"  Kelly        : {KELLY_FRACTION*100}% après {MIN_TRADES_KELLY} trades")
+log.info(f"  Kill Switch  : {MAX_PERTES_CONSECUTIVES} pertes → pause 24h")
+log.info(f"  Seuil ruine  : -{(1-SEUIL_RUINE)*100}% capital")
+log.info(f"  Marches      : {', '.join(MARCHES)}")
 log.info("=" * 55)
 
 # ══════════════════════════════════════════════════════════════
@@ -110,19 +117,25 @@ def get_klines(symbole, limite=100):
         df = pd.DataFrame(candles, columns=[
             'time','open','high','low','close','vwap','volume','count'
         ])
-        df = df.astype({'high':float,'low':float,'close':float,'volume':float})
+        df = df.astype({
+            'high': float, 'low': float,
+            'close': float, 'volume': float
+        })
         return df.tail(limite).reset_index(drop=True)
     except Exception as e:
         log.error(f"Erreur klines {symbole} : {e}")
         return None
 
 # ══════════════════════════════════════════════════════════════
-# INDICATEURS PROFESSIONNELS via ta
+# INDICATEURS
 # ══════════════════════════════════════════════════════════════
 
 def calculer_adx(df, periode=14):
     try:
-        ind = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=periode)
+        ind = ADXIndicator(
+            high=df['high'], low=df['low'],
+            close=df['close'], window=periode
+        )
         val = ind.adx().iloc[-1]
         return round(float(val), 2) if not pd.isna(val) else 0
     except:
@@ -130,19 +143,14 @@ def calculer_adx(df, periode=14):
 
 def calculer_atr(df, periode=14):
     try:
-        ind = AverageTrueRange(high=df['high'], low=df['low'], close=df['close'], window=periode)
+        ind = AverageTrueRange(
+            high=df['high'], low=df['low'],
+            close=df['close'], window=periode
+        )
         val = ind.average_true_range().iloc[-1]
         return round(float(val), 8) if not pd.isna(val) else 0
     except:
         return 0
-
-def calculer_rsi(df, periode=14):
-    try:
-        ind = RSIIndicator(close=df['close'], window=periode)
-        val = ind.rsi().iloc[-1]
-        return round(float(val), 2) if not pd.isna(val) else 50
-    except:
-        return 50
 
 def verifier_volume(df):
     volumes = df['volume'].tolist()
@@ -154,21 +162,102 @@ def verifier_volume(df):
     return ratio >= VOLUME_MINI, round(ratio * 100, 1)
 
 # ══════════════════════════════════════════════════════════════
-# STOP DYNAMIQUE ATR + STRUCTURE
+# STRATÉGIE DONCHIAN 55/20
 # ══════════════════════════════════════════════════════════════
 
-def calculer_stop_dynamique(df, prix_entree, direction, atr):
-    lookback = 10
-    highs = df['high'].tolist()
-    lows  = df['low'].tolist()
-    if direction == "ACHAT":
-        stop_atr       = prix_entree - (atr * ATR_MULTIPLIER)
-        stop_structure = min(lows[-lookback:])
-        return round(min(stop_atr, stop_structure), 8)
+def analyser_donchian(symbole):
+    """
+    Stratégie Turtle Traders :
+    - ACHAT  : clôture > plus haut des 55 dernières bougies
+    - VENTE  : clôture < plus bas des 55 dernières bougies
+    - Filtres : ADX > 20 + Volume > 50%
+    """
+    df = get_klines(symbole, limite=100)
+    if df is None or len(df) < DONCHIAN_ENTREE + 5:
+        log.warning(f"  {symbole} : données insuffisantes")
+        return "NEUTRE", {}
+
+    # Filtres
+    adx = calculer_adx(df)
+    if adx < ADX_SEUIL:
+        log.info(f"  {symbole} : ADX {adx} < {ADX_SEUIL} → RANGE → pas de trade")
+        return "NEUTRE", {"adx": adx}
+
+    volume_ok, volume_ratio = verifier_volume(df)
+    if not volume_ok:
+        log.info(f"  {symbole} : Volume {volume_ratio}% < 50% → pas de trade")
+        return "NEUTRE", {"adx": adx}
+
+    # Calcul Donchian
+    atr          = calculer_atr(df)
+    prix_actuel  = df['close'].iloc[-1]
+
+    # Plus haut et plus bas sur 55 bougies (sans la dernière)
+    plus_haut_55 = df['high'].iloc[-DONCHIAN_ENTREE-1:-1].max()
+    plus_bas_55  = df['low'].iloc[-DONCHIAN_ENTREE-1:-1].min()
+
+    # Niveaux de sortie sur 20 bougies
+    sortie_haut  = df['high'].iloc[-DONCHIAN_SORTIE-1:-1].max()
+    sortie_bas   = df['low'].iloc[-DONCHIAN_SORTIE-1:-1].min()
+
+    atr_pct = (atr / prix_actuel) * 100
+
+    log.info(f"  {symbole} : ADX {adx} | Vol {volume_ratio}% | "
+             f"Prix {round(prix_actuel,4)} | "
+             f"H55 {round(plus_haut_55,4)} | B55 {round(plus_bas_55,4)} | "
+             f"ATR {round(atr_pct,2)}%")
+
+    details = {
+        "adx": adx,
+        "volume_ratio": volume_ratio,
+        "atr": atr,
+        "atr_pct": atr_pct,
+        "plus_haut_55": plus_haut_55,
+        "plus_bas_55": plus_bas_55,
+        "sortie_haut": sortie_haut,
+        "sortie_bas": sortie_bas,
+        "prix_actuel": prix_actuel,
+        "df": df
+    }
+
+    # Signal Donchian
+    if prix_actuel > plus_haut_55:
+        log.info(f"  {symbole} : BREAKOUT HAUSSIER ! "
+                 f"{round(prix_actuel,4)} > H55 {round(plus_haut_55,4)} → ACHAT")
+        return "ACHAT", details
+
+    elif prix_actuel < plus_bas_55:
+        log.info(f"  {symbole} : BREAKOUT BAISSIER ! "
+                 f"{round(prix_actuel,4)} < B55 {round(plus_bas_55,4)} → VENTE")
+        return "VENTE", details
+
     else:
-        stop_atr       = prix_entree + (atr * ATR_MULTIPLIER)
-        stop_structure = max(highs[-lookback:])
-        return round(max(stop_atr, stop_structure), 8)
+        log.info(f"  {symbole} : Prix dans le canal Donchian → pas de signal")
+        return "NEUTRE", details
+
+def choisir_meilleur_marche():
+    log.info(f"\n[{datetime.now().strftime('%H:%M:%S')}] Analyse Donchian des marches...")
+    signaux = {}
+
+    for marche in MARCHES:
+        direction, details = analyser_donchian(marche)
+        if direction != "NEUTRE":
+            signaux[marche] = {"direction": direction, "details": details}
+        time.sleep(1)
+
+    if not signaux:
+        log.info("  => Aucun breakout Donchian. On attend...")
+        return None, "NEUTRE", {}
+
+    # Priorité : ATR le plus élevé (mouvement le plus fort)
+    meilleur  = max(signaux, key=lambda x: signaux[x]["details"].get("atr_pct", 0))
+    direction = signaux[meilleur]["direction"]
+    atr_pct   = signaux[meilleur]["details"].get("atr_pct", 0)
+    adx       = signaux[meilleur]["details"].get("adx", 0)
+
+    log.info(f"\n  => BREAKOUT : {meilleur} ({direction})")
+    log.info(f"     ADX {adx} | ATR {round(atr_pct,2)}%")
+    return meilleur, direction, signaux[meilleur]["details"]
 
 # ══════════════════════════════════════════════════════════════
 # KELLY FRACTIONNÉ
@@ -176,7 +265,6 @@ def calculer_stop_dynamique(df, prix_entree, direction, atr):
 
 def calculer_mise(capital, nb_trades, win_rate, avg_win_pct, avg_loss_pct):
     if nb_trades < MIN_TRADES_KELLY:
-        log.info(f"  Mise fixe 1% (trade {nb_trades}/{MIN_TRADES_KELLY})")
         mise = capital * MISE_FIXE_PCT
     else:
         if avg_loss_pct <= 0:
@@ -189,110 +277,12 @@ def calculer_mise(capital, nb_trades, win_rate, avg_win_pct, avg_loss_pct):
             kelly_frac = kelly_full * KELLY_FRACTION
             kelly_frac = max(0, min(kelly_frac, KELLY_CAP))
             mise       = capital * kelly_frac
-            log.info(f"  Kelly {round(kelly_frac*100,2)}% → mise {round(mise,2)}EUR")
     mise = max(mise, 5.0)
     mise = min(mise, capital * 0.30)
     return round(mise, 2)
 
 # ══════════════════════════════════════════════════════════════
-# ANALYSE DU MARCHÉ
-# ══════════════════════════════════════════════════════════════
-
-def analyser_marche(symbole):
-    df = get_klines(symbole)
-    if df is None or len(df) < 30:
-        log.warning(f"  {symbole} : données insuffisantes")
-        return 0, "NEUTRE", {}
-
-    adx = calculer_adx(df)
-    if adx < ADX_SEUIL:
-        log.info(f"  {symbole} : ADX {adx} < {ADX_SEUIL} → RANGE → pas de trade")
-        return 0, "NEUTRE", {"adx": adx}
-
-    volume_ok, volume_ratio = verifier_volume(df)
-    if not volume_ok:
-        log.info(f"  {symbole} : Volume {volume_ratio}% < 50% → pas de trade")
-        return 0, "NEUTRE", {"adx": adx}
-
-    atr     = calculer_atr(df)
-    rsi     = calculer_rsi(df)
-    closes  = df['close'].tolist()
-    atr_pct = (atr / closes[-1]) * 100 if closes[-1] > 0 else 0
-
-    if rsi < 30:   score_rsi, direction_rsi = 10, "ACHAT"
-    elif rsi < 40: score_rsi, direction_rsi = 6,  "ACHAT"
-    elif rsi > 70: score_rsi, direction_rsi = 10, "VENTE"
-    elif rsi > 60: score_rsi, direction_rsi = 6,  "VENTE"
-    else:          score_rsi, direction_rsi = 2,  "NEUTRE"
-
-    ma_courte    = sum(closes[-10:]) / 10
-    ma_longue    = sum(closes[-30:]) / 30
-    direction_ma = "ACHAT" if ma_courte > ma_longue else "VENTE"
-    ecart_ma     = abs(ma_courte - ma_longue) / ma_longue * 100
-    if ecart_ma > 1:     score_ma = 10
-    elif ecart_ma > 0.5: score_ma = 6
-    else:                score_ma = 2
-
-    if atr_pct > 2:     score_vol = 10
-    elif atr_pct > 1:   score_vol = 6
-    elif atr_pct > 0.5: score_vol = 3
-    else:               score_vol = 1
-
-    if direction_rsi == direction_ma and direction_rsi != "NEUTRE":
-        direction_finale = direction_rsi
-        score_total      = score_rsi + score_ma + score_vol
-    elif direction_ma != "NEUTRE":
-        direction_finale = direction_ma
-        score_total      = score_ma + score_vol
-    else:
-        direction_finale = "NEUTRE"
-        score_total      = 0
-
-    if adx > 25:
-        score_total = min(score_total + 3, 30)
-    score_total = min(score_total, 30)
-
-    log.info(f"  {symbole} : ADX {adx} | Vol {volume_ratio}% | "
-             f"RSI {rsi} ({direction_rsi}) | MA ({direction_ma}) | "
-             f"ATR {round(atr_pct,2)}% | Score {score_total}/30 | {direction_finale}")
-
-    return score_total, direction_finale, {
-        "adx": adx, "volume_ratio": volume_ratio,
-        "rsi": rsi, "atr": atr, "atr_pct": atr_pct,
-        "score_total": score_total, "direction": direction_finale,
-        "df": df
-    }
-
-def choisir_meilleur_marche():
-    log.info(f"[{datetime.now().strftime('%H:%M:%S')}] Analyse des marches...")
-    resultats = {}
-    for marche in MARCHES:
-        score, direction, details = analyser_marche(marche)
-        resultats[marche] = {"score": score, "direction": direction, "details": details}
-        time.sleep(1)
-
-    valides = {k: v for k, v in resultats.items()
-               if v["direction"] != "NEUTRE" and v["score"] >= SCORE_MIN}
-
-    if not valides:
-        log.info("  => Aucun signal valide. On attend...")
-        return None, "NEUTRE", {}
-
-    meilleur  = max(valides, key=lambda x: (
-        valides[x]["score"],
-        valides[x]["details"].get("atr_pct", 0)
-    ))
-    direction = valides[meilleur]["direction"]
-    score     = valides[meilleur]["score"]
-    adx       = valides[meilleur]["details"].get("adx", 0)
-    atr_pct   = valides[meilleur]["details"].get("atr_pct", 0)
-
-    log.info(f"  => CHOIX : {meilleur} ({direction})")
-    log.info(f"     Score {score}/30 | ADX {adx} | ATR {round(atr_pct,2)}%")
-    return meilleur, direction, valides[meilleur]["details"]
-
-# ══════════════════════════════════════════════════════════════
-# SIMULATION DU TRADE
+# SIMULATION DU TRADE DONCHIAN
 # ══════════════════════════════════════════════════════════════
 
 def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
@@ -300,42 +290,41 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
     if prix_entree is None:
         return "ERREUR", 0, 0, {}
 
-    df  = details.get("df")
-    atr = details.get("atr", 0)
+    atr         = details.get("atr", 0)
+    sortie_haut = details.get("sortie_haut", 0)
+    sortie_bas  = details.get("sortie_bas", 0)
 
-    stop_loss         = calculer_stop_dynamique(df, prix_entree, direction, atr)
+    # Stop ATR × 2
+    if direction == "ACHAT":
+        stop_loss     = round(prix_entree - (atr * ATR_MULTIPLIER), 8)
+        prix_sortie_d = sortie_bas   # Sortie Donchian si prix < plus bas 20
+    else:
+        stop_loss     = round(prix_entree + (atr * ATR_MULTIPLIER), 8)
+        prix_sortie_d = sortie_haut  # Sortie Donchian si prix > plus haut 20
+
     distance_stop     = abs(prix_entree - stop_loss)
     distance_stop_pct = (distance_stop / prix_entree) * 100
 
-    if direction == "ACHAT":
-        prix_objectif = round(prix_entree + (distance_stop * RATIO_RR), 8)
-    else:
-        prix_objectif = round(prix_entree - (distance_stop * RATIO_RR), 8)
-
     win_rate = etat["nb_wins"] / etat["nb_trades"] if etat["nb_trades"] > 0 else 0.50
-    avg_win  = etat["avg_win_pct"] if etat["avg_win_pct"] > 0 else distance_stop_pct * RATIO_RR
+    avg_win  = etat["avg_win_pct"] if etat["avg_win_pct"] > 0 else distance_stop_pct * 2
     avg_loss = etat["avg_loss_pct"] if etat["avg_loss_pct"] > 0 else distance_stop_pct
     mise     = calculer_mise(capital, etat["nb_trades"], win_rate, avg_win, avg_loss)
-
-    gain_potentiel    = round(mise * LEVIER * (distance_stop_pct / 100) * RATIO_RR, 2)
-    perte_potentielle = round(mise * LEVIER * (distance_stop_pct / 100), 2)
 
     log.info(f"\n  {'='*50}")
     log.info(f"  TRADE #{numero_trade} — {datetime.now().strftime('%H:%M:%S')}")
     log.info(f"  {'='*50}")
     log.info(f"  Symbole        : {symbole} ({direction})")
     log.info(f"  Prix entree    : {prix_entree}")
-    log.info(f"  Stop initial   : {stop_loss} ({round(distance_stop_pct,2)}%)")
-    log.info(f"  Objectif       : {prix_objectif} (ratio 1:{int(RATIO_RR)})")
+    log.info(f"  Stop ATR×2     : {stop_loss} ({round(distance_stop_pct,2)}%)")
+    log.info(f"  Sortie Donchian: {prix_sortie_d} (plus haut/bas 20j)")
     log.info(f"  Mise           : {mise}EUR | Levier x{LEVIER}")
-    log.info(f"  Gain potentiel : +{gain_potentiel}EUR")
-    log.info(f"  Perte max      : -{perte_potentielle}EUR\n")
+    log.info(f"  Timeout        : 24h\n")
 
     debut         = time.time()
     stop_actuel   = stop_loss
     meilleur_prix = prix_entree
     dernier_log   = 0
-    prix_sortie   = prix_entree
+    prix_cloture  = prix_entree
 
     while True:
         time.sleep(CHECK_INTERVAL)
@@ -344,26 +333,27 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
         if prix_actuel is None:
             continue
 
-        prix_sortie = prix_actuel
+        prix_cloture = prix_actuel
 
+        # Trailing Stop Donchian
         if direction == "ACHAT":
             if prix_actuel > meilleur_prix:
                 meilleur_prix = prix_actuel
                 nouveau_stop  = round(meilleur_prix - distance_stop, 8)
                 if nouveau_stop > stop_actuel:
                     stop_actuel = nouveau_stop
-            pnl              = round((prix_actuel - prix_entree) / prix_entree * mise * LEVIER, 2)
-            atteint_objectif = prix_actuel >= prix_objectif
-            atteint_stop     = prix_actuel <= stop_actuel
+            pnl          = round((prix_actuel - prix_entree) / prix_entree * mise * LEVIER, 2)
+            sortie_don   = prix_actuel < prix_sortie_d  # Sortie si prix < bas 20j
+            atteint_stop = prix_actuel <= stop_actuel
         else:
             if prix_actuel < meilleur_prix:
                 meilleur_prix = prix_actuel
                 nouveau_stop  = round(meilleur_prix + distance_stop, 8)
                 if nouveau_stop < stop_actuel:
                     stop_actuel = nouveau_stop
-            pnl              = round((prix_entree - prix_actuel) / prix_entree * mise * LEVIER, 2)
-            atteint_objectif = prix_actuel <= prix_objectif
-            atteint_stop     = prix_actuel >= stop_actuel
+            pnl          = round((prix_entree - prix_actuel) / prix_entree * mise * LEVIER, 2)
+            sortie_don   = prix_actuel > prix_sortie_d  # Sortie si prix > haut 20j
+            atteint_stop = prix_actuel >= stop_actuel
 
         duree = int((time.time() - debut) / 60)
 
@@ -374,33 +364,35 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
             dernier_log = time.time()
 
         trade_info = {
-            "prix_entree": prix_entree,
-            "prix_sortie": prix_sortie,
-            "stop_loss": stop_loss,
-            "objectif": prix_objectif,
+            "prix_entree":   prix_entree,
+            "prix_sortie":   prix_cloture,
+            "stop_loss":     stop_loss,
+            "objectif":      prix_sortie_d,
             "duree_minutes": duree
         }
 
-        if atteint_objectif:
-            log.info(f"\n  OBJECTIF ATTEINT ! +{pnl}EUR")
-            return "GAGNE", pnl, mise, trade_info
+        # Sortie Donchian (signal de retournement)
+        if sortie_don:
+            log.info(f"\n  SORTIE DONCHIAN ! {'+' if pnl >= 0 else ''}{pnl}EUR")
+            return ("GAGNE" if pnl > 0 else "PERDU"), pnl, mise, trade_info
 
+        # Stop-loss ATR
         if atteint_stop:
-            log.info(f"\n  STOP-LOSS ATTEINT ! {pnl}EUR")
+            log.info(f"\n  STOP-LOSS ATR ! {pnl}EUR")
             return "PERDU", pnl, mise, trade_info
 
+        # Timeout 24h
         if time.time() - debut >= TIMEOUT_TRADE:
-            log.info(f"\n  TIMEOUT {int(TIMEOUT_TRADE/3600)}H — Fermeture : "
-                     f"{'+' if pnl >= 0 else ''}{pnl}EUR")
+            log.info(f"\n  TIMEOUT 24H — Fermeture : {'+' if pnl >= 0 else ''}{pnl}EUR")
             return ("GAGNE" if pnl > 0 else "PERDU"), pnl, mise, trade_info
 
 # ══════════════════════════════════════════════════════════════
-# KILL SWITCH avec pause persistante PostgreSQL
+# KILL SWITCH
 # ══════════════════════════════════════════════════════════════
 
 def verifier_kill_switch(etat, capital):
     if capital < CAPITAL_INITIAL * SEUIL_RUINE:
-        log.critical(f"SEUIL DE RUINE ATTEINT ! Capital {capital}EUR")
+        log.critical(f"SEUIL DE RUINE ! Capital {capital}EUR")
         return "RUINE"
 
     pause_until = etat.get("pause_until", 0)
@@ -412,8 +404,8 @@ def verifier_kill_switch(etat, capital):
 
     if etat["pertes_consecutives"] >= MAX_PERTES_CONSECUTIVES:
         log.warning(f"KILL SWITCH — {MAX_PERTES_CONSECUTIVES} pertes consecutives !")
-        etat["pause_until"]          = int(time.time()) + PAUSE_DUREE
-        etat["pertes_consecutives"]  = 0
+        etat["pause_until"]         = int(time.time()) + PAUSE_DUREE
+        etat["pertes_consecutives"] = 0
         sauvegarder_etat(etat)
         return "PAUSE"
 
@@ -427,7 +419,7 @@ def afficher_tableau_de_bord(etat):
     win_rate = (etat["nb_wins"] / etat["nb_trades"] * 100) if etat["nb_trades"] > 0 else 0
     perf     = ((etat["capital"] - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100)
     log.info(f"\n  {'='*55}")
-    log.info(f"  BOT ULTIME V4.2 — TABLEAU DE BORD")
+    log.info(f"  BOT V5 DONCHIAN — TABLEAU DE BORD")
     log.info(f"  {'='*55}")
     log.info(f"  Capital actuel : {round(etat['capital'],2)}EUR "
              f"({'+' if perf >= 0 else ''}{round(perf,2)}%)")
@@ -435,7 +427,6 @@ def afficher_tableau_de_bord(etat):
     log.info(f"  Victoires      : {etat['nb_wins']} ({win_rate:.1f}%)")
     log.info(f"  Defaites       : {etat['nb_losses']}")
     log.info(f"  Pertes consec. : {etat['pertes_consecutives']}/{MAX_PERTES_CONSECUTIVES}")
-    log.info(f"  Kelly actif    : {'Non (<30 trades)' if etat['nb_trades'] < MIN_TRADES_KELLY else 'Oui'}")
     log.info(f"  Total gagne    : +{round(etat['total_gagne'],2)}EUR")
     log.info(f"  Total perdu    : -{round(etat['total_perdu'],2)}EUR")
     log.info(f"  BENEFICE NET   : {'+' if etat['cumul_net'] >= 0 else ''}{round(etat['cumul_net'],2)}EUR")
@@ -454,11 +445,9 @@ def afficher_tableau_de_bord(etat):
 # ══════════════════════════════════════════════════════════════
 
 def demarrer_bot():
-    log.info(f"DEMARRAGE — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log.info(f"DEMARRAGE BOT V5 DONCHIAN — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # Initialisation PostgreSQL
     init_database()
-
     etat = charger_etat()
     afficher_tableau_de_bord(etat)
 
@@ -517,7 +506,6 @@ def demarrer_bot():
                         (etat["avg_loss_pct"] * (etat["nb_losses"]-1) + perte_pct) / etat["nb_losses"], 4
                     )
 
-            # Enregistrement trade dans PostgreSQL
             enregistrer_trade({
                 'marche':        symbole,
                 'direction':     direction,
@@ -530,10 +518,10 @@ def demarrer_bot():
                 'gain':          round(gain, 2),
                 'capital_apres': etat['capital'],
                 'duree_minutes': trade_info['duree_minutes'],
-                'score':         details.get('score_total'),
+                'score':         None,
                 'adx':           details.get('adx'),
                 'atr':           details.get('atr'),
-                'rsi':           details.get('rsi'),
+                'rsi':           None,
             })
 
             sauvegarder_etat(etat)
