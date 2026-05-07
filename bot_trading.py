@@ -1,10 +1,9 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║                BOT ADAPTATIF V6.1                            ║
-║   TENDANCE  → Stratégie Donchian 55/20                      ║
-║   RANGE     → Stratégie Mean Reversion RSI                   ║
-║   Stop ATR×2.5 | Ratio 1:1.5 | Sortie partielle 50%        ║
-║   BTC + ETH + SOL | H1 | Kelly 25%                          ║
+║                BOT MEAN REVERSION V7                         ║
+║   RSI < 30 → ACHAT | RSI > 70 → VENTE                      ║
+║   8 marchés | H1 | Stop ATR×2.5 | Ratio 1:1.5              ║
+║   Sortie partielle 50% | Kelly 25% | PostgreSQL              ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -37,38 +36,54 @@ MISE_FIXE_PCT           = 0.01
 KELLY_FRACTION          = 0.25
 KELLY_CAP               = 0.05
 MIN_TRADES_KELLY        = 30
-ATR_MULTIPLIER          = 2.5       # Stop plus large
-RATIO_RR                = 1.5       # Ratio plus réaliste
-RATIO_PARTIEL           = 1.0       # Sortie 50% à ratio 1:1
+ATR_MULTIPLIER          = 2.5
+RATIO_RR                = 1.5
+RATIO_PARTIEL           = 1.0
 PAUSE                   = 120
 CHECK_INTERVAL          = 10
 TIMEOUT_TRADE           = 12 * 3600
 
-ADX_TENDANCE            = 25
-VOLUME_MINI             = 0.40
-DONCHIAN_ENTREE         = 55
-DONCHIAN_SORTIE         = 20
+# Filtres
 RSI_ACHAT               = 30
 RSI_VENTE               = 70
+VOLUME_MINI             = 0.40
+ADX_MAX                 = 40    # Pas de mean reversion si tendance trop forte
 
+# Kill Switch
 MAX_PERTES_CONSECUTIVES = 3
 SEUIL_RUINE             = 0.50
 PAUSE_DUREE             = 86400
 
-MARCHES = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+# 8 marchés variés pour plus de signaux
+MARCHES = [
+    "BTCUSDT",   # Gros cap stable
+    "ETHUSDT",   # Gros cap stable
+    "BNBUSDT",   # Grosse liquidité
+    "XRPUSDT",   # Très liquide
+    "ADAUSDT",   # Volatile
+    "LINKUSDT",  # Volatile, bon pour mean rev
+    "DOTUSDT",   # Volatile
+    "ATOMUSDT"   # Volatile
+]
+
 KRAKEN_SYMBOLS = {
-    "BTCUSDT": "XXBTZUSD",
-    "ETHUSDT": "XETHZUSD",
-    "SOLUSDT": "SOLUSD"
+    "BTCUSDT":  "XXBTZUSD",
+    "ETHUSDT":  "XETHZUSD",
+    "BNBUSDT":  "BNBUSD",
+    "XRPUSDT":  "XXRPZUSD",
+    "ADAUSDT":  "ADAUSD",
+    "LINKUSDT": "LINKUSD",
+    "DOTUSDT":  "DOTUSD",
+    "ATOMUSDT": "ATOMUSD"
 }
 
 log.info("=" * 55)
-log.info("  BOT ADAPTATIF V6.1")
-log.info(f"  ADX > {ADX_TENDANCE} → TENDANCE → Donchian {DONCHIAN_ENTREE}/{DONCHIAN_SORTIE}")
-log.info(f"  ADX < {ADX_TENDANCE} → RANGE    → Mean Reversion RSI {RSI_ACHAT}/{RSI_VENTE}")
-log.info(f"  Stop ATR × {ATR_MULTIPLIER} | Ratio 1:{RATIO_RR} | Partiel à 1:{RATIO_PARTIEL}")
+log.info("  BOT MEAN REVERSION V7")
+log.info(f"  RSI < {RSI_ACHAT} → ACHAT | RSI > {RSI_VENTE} → VENTE")
+log.info(f"  ADX max : {ADX_MAX} (pas de mean rev en tendance forte)")
+log.info(f"  Stop ATR×{ATR_MULTIPLIER} | Ratio 1:{RATIO_RR} | Partiel 1:{RATIO_PARTIEL}")
 log.info(f"  Kelly {KELLY_FRACTION*100}% après {MIN_TRADES_KELLY} trades")
-log.info(f"  Marches : {', '.join(MARCHES)}")
+log.info(f"  Marches : {len(MARCHES)} cryptos")
 log.info("=" * 55)
 
 # ══════════════════════════════════════════════════════════════
@@ -155,14 +170,21 @@ def verifier_volume(df):
     return ratio >= VOLUME_MINI, round(ratio * 100, 1)
 
 # ══════════════════════════════════════════════════════════════
-# ANALYSE ADAPTATIVE
+# ANALYSE MEAN REVERSION
 # ══════════════════════════════════════════════════════════════
 
 def analyser_marche(symbole):
+    """
+    Mean Reversion pure :
+    - RSI < 30 → survendu → ACHAT (le prix va remonter)
+    - RSI > 70 → suracheté → VENTE (le prix va descendre)
+    - Filtre ADX < 40 → pas de mean rev en tendance très forte
+    - Filtre Volume > 40% → liquidité suffisante
+    """
     df = get_klines(symbole, limite=100)
-    if df is None or len(df) < 60:
+    if df is None or len(df) < 30:
         log.warning(f"  {symbole} : données insuffisantes")
-        return "NEUTRE", {}, "N/A"
+        return "NEUTRE", {}
 
     adx = calculer_adx(df)
     atr = calculer_atr(df)
@@ -170,11 +192,16 @@ def analyser_marche(symbole):
 
     volume_ok, volume_ratio = verifier_volume(df)
     if not volume_ok:
-        log.info(f"  {symbole} : Volume {volume_ratio}% < {VOLUME_MINI*100}% → pas de trade")
-        return "NEUTRE", {}, "N/A"
+        log.info(f"  {symbole} : Volume {volume_ratio}% < {VOLUME_MINI*100}% → skip")
+        return "NEUTRE", {}
 
     prix    = df['close'].iloc[-1]
     atr_pct = (atr / prix) * 100
+
+    # Filtre ADX — pas de mean reversion en tendance très forte
+    if adx > ADX_MAX:
+        log.info(f"  {symbole} : ADX {adx} > {ADX_MAX} → tendance trop forte → skip")
+        return "NEUTRE", {}
 
     details = {
         "adx": adx, "atr": atr, "rsi": rsi,
@@ -182,68 +209,58 @@ def analyser_marche(symbole):
         "df": df
     }
 
-    if adx >= ADX_TENDANCE:
-        plus_haut_55 = df['high'].iloc[-DONCHIAN_ENTREE-1:-1].max()
-        plus_bas_55  = df['low'].iloc[-DONCHIAN_ENTREE-1:-1].min()
-        sortie_haut  = df['high'].iloc[-DONCHIAN_SORTIE-1:-1].max()
-        sortie_bas   = df['low'].iloc[-DONCHIAN_SORTIE-1:-1].min()
+    if rsi < RSI_ACHAT:
+        log.info(f"  {symbole} : RSI {rsi} < {RSI_ACHAT} → SURVENDU → ACHAT ✅ "
+                 f"(ADX {adx} | Vol {volume_ratio}% | ATR {round(atr_pct,2)}%)")
+        return "ACHAT", details
 
-        details.update({
-            "strategie": "DONCHIAN",
-            "plus_haut_55": plus_haut_55,
-            "plus_bas_55": plus_bas_55,
-            "sortie_haut": sortie_haut,
-            "sortie_bas": sortie_bas
-        })
+    elif rsi > RSI_VENTE:
+        log.info(f"  {symbole} : RSI {rsi} > {RSI_VENTE} → SURACHETÉ → VENTE ✅ "
+                 f"(ADX {adx} | Vol {volume_ratio}% | ATR {round(atr_pct,2)}%)")
+        return "VENTE", details
 
-        if prix > plus_haut_55:
-            log.info(f"  {symbole} [TENDANCE] BREAKOUT HAUSSIER ! ADX {adx} → ACHAT Donchian")
-            return "ACHAT", details, "DONCHIAN"
-        elif prix < plus_bas_55:
-            log.info(f"  {symbole} [TENDANCE] BREAKOUT BAISSIER ! ADX {adx} → VENTE Donchian")
-            return "VENTE", details, "DONCHIAN"
-        else:
-            log.info(f"  {symbole} [TENDANCE] ADX {adx} | Prix dans canal Donchian")
-            return "NEUTRE", details, "DONCHIAN"
     else:
-        details["strategie"] = "MEAN_REVERSION"
-        if rsi < RSI_ACHAT:
-            log.info(f"  {symbole} [RANGE] RSI {rsi} < {RSI_ACHAT} → SURVENDU → ACHAT")
-            return "ACHAT", details, "MEAN_REVERSION"
-        elif rsi > RSI_VENTE:
-            log.info(f"  {symbole} [RANGE] RSI {rsi} > {RSI_VENTE} → SURACHETÉ → VENTE")
-            return "VENTE", details, "MEAN_REVERSION"
-        else:
-            log.info(f"  {symbole} [RANGE] ADX {adx} | RSI {rsi} → pas de signal")
-            return "NEUTRE", details, "MEAN_REVERSION"
+        log.info(f"  {symbole} : RSI {rsi} | ADX {adx} → pas de signal")
+        return "NEUTRE", details
 
 def choisir_meilleur_marche():
-    log.info(f"\n[{datetime.now().strftime('%H:%M:%S')}] Analyse adaptative...")
+    log.info(f"\n[{datetime.now().strftime('%H:%M:%S')}] Scan Mean Reversion — {len(MARCHES)} marchés...")
     signaux = {}
 
     for marche in MARCHES:
-        direction, details, strategie = analyser_marche(marche)
+        direction, details = analyser_marche(marche)
         if direction != "NEUTRE":
-            signaux[marche] = {
-                "direction": direction,
-                "details": details,
-                "strategie": strategie
-            }
-        time.sleep(1)
+            signaux[marche] = {"direction": direction, "details": details}
+        time.sleep(0.5)
 
     if not signaux:
-        log.info("  => Aucun signal. On attend...")
-        return None, "NEUTRE", {}, "N/A"
+        log.info("  => Aucun signal RSI extrême. On attend...")
+        return None, "NEUTRE", {}
 
-    meilleur  = max(signaux, key=lambda x: signaux[x]["details"].get("atr_pct", 0))
+    # Priorité : RSI le plus extrême (le plus survendu ou suracheté)
+    def score_signal(item):
+        rsi     = item[1]["details"].get("rsi", 50)
+        dir_    = item[1]["direction"]
+        atr_pct = item[1]["details"].get("atr_pct", 0)
+        # Plus le RSI est loin de 50, plus le signal est fort
+        force_rsi = abs(rsi - 50)
+        return (force_rsi, atr_pct)
+
+    meilleur  = max(signaux.items(), key=score_signal)[0]
     direction = signaux[meilleur]["direction"]
-    strategie = signaux[meilleur]["strategie"]
-    atr_pct   = signaux[meilleur]["details"].get("atr_pct", 0)
+    rsi       = signaux[meilleur]["details"].get("rsi", 50)
     adx       = signaux[meilleur]["details"].get("adx", 0)
+    atr_pct   = signaux[meilleur]["details"].get("atr_pct", 0)
 
-    log.info(f"\n  => SIGNAL : {meilleur} ({direction}) — [{strategie}]")
-    log.info(f"     ADX {adx} | ATR {round(atr_pct,2)}%")
-    return meilleur, direction, signaux[meilleur]["details"], strategie
+    log.info(f"\n  => MEILLEUR SIGNAL : {meilleur} ({direction})")
+    log.info(f"     RSI {rsi} | ADX {adx} | ATR {round(atr_pct,2)}%")
+
+    # Afficher tous les autres signaux trouvés
+    autres = [m for m in signaux if m != meilleur]
+    if autres:
+        log.info(f"     Autres signaux ignorés : {', '.join(autres)}")
+
+    return meilleur, direction, signaux[meilleur]["details"]
 
 # ══════════════════════════════════════════════════════════════
 # KELLY
@@ -268,26 +285,24 @@ def calculer_mise(capital, nb_trades, win_rate, avg_win_pct, avg_loss_pct):
     return round(mise, 2)
 
 # ══════════════════════════════════════════════════════════════
-# SIMULATION DU TRADE AVEC SORTIE PARTIELLE
+# SIMULATION DU TRADE
 # ══════════════════════════════════════════════════════════════
 
-def simuler_trade(symbole, direction, numero_trade, capital, details, strategie, etat):
+def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
     prix_entree = get_prix_actuel(symbole)
     if prix_entree is None:
         return "ERREUR", 0, 0, {}
 
     atr = details.get("atr", 0)
 
-    # Stop plus large ATR × 2.5
     if direction == "ACHAT":
-        stop_loss = round(prix_entree - (atr * ATR_MULTIPLIER), 8)
+        stop_loss        = round(prix_entree - (atr * ATR_MULTIPLIER), 8)
     else:
-        stop_loss = round(prix_entree + (atr * ATR_MULTIPLIER), 8)
+        stop_loss        = round(prix_entree + (atr * ATR_MULTIPLIER), 8)
 
-    distance_stop = abs(prix_entree - stop_loss)
-    distance_stop_pct = (distance_stop / prix_entree) * 100
+    distance_stop        = abs(prix_entree - stop_loss)
+    distance_stop_pct    = (distance_stop / prix_entree) * 100
 
-    # Objectif partiel (1:1) et objectif final (1:1.5)
     if direction == "ACHAT":
         objectif_partiel = round(prix_entree + (distance_stop * RATIO_PARTIEL), 8)
         objectif_final   = round(prix_entree + (distance_stop * RATIO_RR), 8)
@@ -301,22 +316,23 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, strategie,
     mise     = calculer_mise(capital, etat["nb_trades"], win_rate, avg_win, avg_loss)
 
     log.info(f"\n  {'='*50}")
-    log.info(f"  TRADE #{numero_trade} [{strategie}] — {datetime.now().strftime('%H:%M:%S')}")
+    log.info(f"  TRADE #{numero_trade} [MEAN_REV] — {datetime.now().strftime('%H:%M:%S')}")
     log.info(f"  {'='*50}")
     log.info(f"  Symbole          : {symbole} ({direction})")
+    log.info(f"  RSI              : {details.get('rsi', 0)}")
     log.info(f"  Prix entree      : {prix_entree}")
     log.info(f"  Stop ATR×{ATR_MULTIPLIER}     : {stop_loss} ({round(distance_stop_pct,2)}%)")
-    log.info(f"  Objectif partiel : {objectif_partiel} (50% à ratio 1:{RATIO_PARTIEL})")
-    log.info(f"  Objectif final   : {objectif_final} (50% à ratio 1:{RATIO_RR})")
+    log.info(f"  Objectif partiel : {objectif_partiel} (50% à 1:{RATIO_PARTIEL})")
+    log.info(f"  Objectif final   : {objectif_final} (50% à 1:{RATIO_RR})")
     log.info(f"  Mise             : {mise}EUR | Levier x{LEVIER}\n")
 
-    debut            = time.time()
-    stop_actuel      = stop_loss
-    meilleur_prix    = prix_entree
-    dernier_log      = 0
-    prix_sortie      = prix_entree
-    partiel_execute  = False  # Sortie partielle déjà faite ?
-    gain_partiel     = 0
+    debut           = time.time()
+    stop_actuel     = stop_loss
+    meilleur_prix   = prix_entree
+    dernier_log     = 0
+    prix_sortie     = prix_entree
+    partiel_execute = False
+    gain_partiel    = 0
 
     while True:
         time.sleep(CHECK_INTERVAL)
@@ -328,7 +344,6 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, strategie,
         prix_sortie = prix_actuel
 
         if direction == "ACHAT":
-            # Trailing stop
             if prix_actuel > meilleur_prix:
                 meilleur_prix = prix_actuel
                 nouveau_stop  = round(meilleur_prix - distance_stop, 8)
@@ -355,7 +370,7 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, strategie,
             log.info(f"  [{datetime.now().strftime('%H:%M:%S')}] {symbole}: {prix_actuel} | "
                      f"PnL: {'+' if pnl >= 0 else ''}{pnl}EUR | "
                      f"Stop: {stop_actuel} | {duree}min"
-                     f"{' | PARTIEL OK' if partiel_execute else ''}")
+                     f"{' | PARTIEL OK ✅' if partiel_execute else ''}")
             dernier_log = time.time()
 
         trade_info = {
@@ -363,37 +378,34 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, strategie,
             "prix_sortie":   prix_sortie,
             "stop_loss":     stop_loss,
             "objectif":      objectif_final,
-            "duree_minutes": duree,
-            "strategie":     strategie
+            "duree_minutes": duree
         }
 
-        # Sortie partielle à 1:1 — on ferme 50%
+        # Sortie partielle
         if atteint_partiel:
             gain_partiel    = round(pnl * 0.5, 2)
             partiel_execute = True
-            # On déplace le stop au prix d'entrée (trade sans risque)
-            stop_actuel     = prix_entree
-            log.info(f"  SORTIE PARTIELLE 50% ! +{gain_partiel}EUR | Stop → prix entrée")
+            stop_actuel     = prix_entree  # Trade sans risque
+            log.info(f"  SORTIE PARTIELLE 50% ! +{gain_partiel}EUR | Stop → prix entrée ✅")
             continue
 
-        # Objectif final — on ferme les 50% restants
+        # Objectif final
         if atteint_final:
             gain_final = round(pnl * 0.5, 2)
             gain_total = round(gain_partiel + gain_final, 2)
-            log.info(f"\n  OBJECTIF FINAL ATTEINT ! Total: +{gain_total}EUR")
+            log.info(f"\n  OBJECTIF FINAL ! Total: +{gain_total}EUR 🎉")
             return "GAGNE", gain_total, mise, trade_info
 
-        # Stop-loss
+        # Stop
         if atteint_stop:
             if partiel_execute:
-                # On a déjà sécurisé 50% — la perte est sur les 50% restants
                 gain_reste = round(pnl * 0.5, 2)
                 gain_total = round(gain_partiel + gain_reste, 2)
                 resultat   = "GAGNE" if gain_total > 0 else "PERDU"
-                log.info(f"\n  STOP ATTEINT (après partiel) ! Total: {'+' if gain_total>=0 else ''}{gain_total}EUR")
+                log.info(f"\n  STOP (après partiel) — Total: {'+' if gain_total>=0 else ''}{gain_total}EUR")
                 return resultat, gain_total, mise, trade_info
             else:
-                log.info(f"\n  STOP-LOSS ATTEINT ! {pnl}EUR")
+                log.info(f"\n  STOP-LOSS ! {pnl}EUR")
                 return "PERDU", pnl, mise, trade_info
 
         # Timeout
@@ -440,7 +452,7 @@ def afficher_tableau_de_bord(etat):
     win_rate = (etat["nb_wins"] / etat["nb_trades"] * 100) if etat["nb_trades"] > 0 else 0
     perf     = ((etat["capital"] - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100)
     log.info(f"\n  {'='*55}")
-    log.info(f"  BOT ADAPTATIF V6.1 — TABLEAU DE BORD")
+    log.info(f"  BOT MEAN REVERSION V7 — TABLEAU DE BORD")
     log.info(f"  {'='*55}")
     log.info(f"  Capital actuel : {round(etat['capital'],2)}EUR "
              f"({'+' if perf >= 0 else ''}{round(perf,2)}%)")
@@ -467,7 +479,7 @@ def afficher_tableau_de_bord(etat):
 # ══════════════════════════════════════════════════════════════
 
 def demarrer_bot():
-    log.info(f"DEMARRAGE BOT ADAPTATIF V6.1 — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log.info(f"DEMARRAGE BOT MEAN REVERSION V7 — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     init_database()
     etat = charger_etat()
@@ -482,7 +494,7 @@ def demarrer_bot():
                 etat = charger_etat()
                 continue
 
-            symbole, direction, details, strategie = choisir_meilleur_marche()
+            symbole, direction, details = choisir_meilleur_marche()
 
             if direction == "NEUTRE" or symbole is None:
                 etat["nb_skips"] += 1
@@ -494,7 +506,7 @@ def demarrer_bot():
             etat["nb_trades"] += 1
             resultat, gain, mise, trade_info = simuler_trade(
                 symbole, direction, etat["nb_trades"],
-                etat["capital"], details, strategie, etat
+                etat["capital"], details, etat
             )
 
             if resultat == "ERREUR":
