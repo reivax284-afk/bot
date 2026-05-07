@@ -1,8 +1,10 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║           BACKTESTER MEAN REVERSION V7.1                     ║
-║   Ratio 1:2 | 12 marchés | Nouveaux marchés testés          ║
-║   RSI < 30 → ACHAT | RSI > 70 → VENTE                      ║
+║         BACKTESTER COMPARATIF — 3 OPTIONS                    ║
+║   A: Levier x10 | Mise 5%                                   ║
+║   B: Levier x3  | Mise 20%                                  ║
+║   C: Levier x10 | Mise 20%                                  ║
+║   10 marchés validés | Mean Reversion RSI                    ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -13,63 +15,45 @@ from ta.trend import ADXIndicator
 from ta.volatility import AverageTrueRange
 from ta.momentum import RSIIndicator
 
-CAPITAL_INITIAL  = 50.0
-LEVIER           = 3
-MISE_PCT         = 0.01
-ATR_MULTIPLIER   = 2.5
-RATIO_RR         = 2.0       # Augmenté à 1:2
-RATIO_PARTIEL    = 1.0
-RSI_ACHAT        = 30
-RSI_VENTE        = 70
-ADX_MAX          = 40
-VOLUME_MINI      = 0.40
-FRAIS_PCT        = 0.0004
-SLIPPAGE_PCT     = 0.0002
-TIMEOUT_BOUGIES  = 12
+CAPITAL_INITIAL = 50.0
+ATR_MULTIPLIER  = 2.5
+RATIO_RR        = 2.0
+RATIO_PARTIEL   = 1.0
+RSI_ACHAT       = 30
+RSI_VENTE       = 70
+ADX_MAX         = 40
+VOLUME_MINI     = 0.40
+FRAIS_PCT       = 0.0004
+SLIPPAGE_PCT    = 0.0002
+TIMEOUT_BOUGIES = 12
 
-# 12 marchés — les 6 meilleurs + 6 nouveaux à tester
-MARCHES = [
-    # Les 6 meilleurs confirmés
-    "BTCUSDT",   # WR 78.6%
-    "ETHUSDT",   # WR 64.3%
-    "XRPUSDT",   # WR 75%
-    "ATOMUSDT",  # WR 72.7% +0.07€
-    "LINKUSDT",  # WR 71.4% +0.14€
-    "ADAUSDT",   # WR 63.6%
-    # 6 nouveaux à tester
-    "SOLUSDT",   # Très volatile, bon candidat
-    "AVAXUSDT",  # Volatile, grosse liquidité
-    "NEARUSDT",  # Volatile, moins connu
-    "MATICUSDT", # Polygon, bon volume
-    "UNIUSDT",   # DeFi, volatile
-    "AAVEUSDT"   # DeFi, très volatile
+# 3 options à comparer
+OPTIONS = [
+    {"nom": "A — Levier x10 | Mise  5%", "levier": 10, "mise_pct": 0.05},
+    {"nom": "B — Levier  x3 | Mise 20%", "levier":  3, "mise_pct": 0.20},
+    {"nom": "C — Levier x10 | Mise 20%", "levier": 10, "mise_pct": 0.20},
 ]
 
+MARCHES = [
+    "BTCUSDT", "ETHUSDT", "XRPUSDT", "ATOMUSDT", "LINKUSDT",
+    "ADAUSDT", "SOLUSDT", "AVAXUSDT", "NEARUSDT", "AAVEUSDT"
+]
 KRAKEN_SYMBOLS = {
-    "BTCUSDT":   "XXBTZUSD",
-    "ETHUSDT":   "XETHZUSD",
-    "XRPUSDT":   "XXRPZUSD",
-    "ATOMUSDT":  "ATOMUSD",
-    "LINKUSDT":  "LINKUSD",
-    "ADAUSDT":   "ADAUSD",
-    "SOLUSDT":   "SOLUSD",
-    "AVAXUSDT":  "AVAXUSD",
-    "NEARUSDT":  "NEARUSD",
-    "MATICUSDT": "MATICUSD",
-    "UNIUSDT":   "UNIUSD",
-    "AAVEUSDT":  "AAVEUSD"
+    "BTCUSDT":  "XXBTZUSD", "ETHUSDT":  "XETHZUSD",
+    "XRPUSDT":  "XXRPZUSD", "ATOMUSDT": "ATOMUSD",
+    "LINKUSDT": "LINKUSD",  "ADAUSDT":  "ADAUSD",
+    "SOLUSDT":  "SOLUSD",   "AVAXUSDT": "AVAXUSD",
+    "NEARUSDT": "NEARUSD",  "AAVEUSDT": "AAVEUSD"
 }
 
 def get_data(symbole):
     kraken_symbol = KRAKEN_SYMBOLS.get(symbole, symbole)
     url    = "https://api.kraken.com/0/public/OHLC"
     params = {"pair": kraken_symbol, "interval": 60}
-    print(f"  Téléchargement {symbole}...")
     try:
         r    = requests.get(url, params=params, timeout=30)
         data = r.json()
         if data.get("error") and data["error"]:
-            print(f"  Erreur API {symbole} : {data['error']}")
             return None
         result = data.get("result", {})
         keys   = [k for k in result.keys() if k != "last"]
@@ -83,10 +67,8 @@ def get_data(symbole):
                         'close': float, 'volume': float})
         df['datetime'] = pd.to_datetime(df['time'], unit='s')
         df = df.set_index('datetime').sort_index()
-        print(f"  {len(df)} bougies H1")
         return df
-    except Exception as e:
-        print(f"  Erreur {symbole} : {e}")
+    except:
         return None
 
 def ajouter_indicateurs(df):
@@ -98,19 +80,21 @@ def ajouter_indicateurs(df):
     df['vol_ratio'] = df['volume'] / df['vol_moy']
     return df.dropna()
 
-def backtest(df, symbole):
+def backtest(df, levier, mise_pct):
     trades   = []
     capital  = CAPITAL_INITIAL
     i        = 20
     frais    = (FRAIS_PCT + SLIPPAGE_PCT) * 2
+    ruine    = False
 
     while i < len(df) - TIMEOUT_BOUGIES - 2:
-        row = df.iloc[i]
+        # Vérification seuil de ruine
+        if capital < CAPITAL_INITIAL * 0.30:
+            ruine = True
+            break
 
-        if row['vol_ratio'] < VOLUME_MINI:
-            i += 1
-            continue
-        if row['adx'] > ADX_MAX:
+        row = df.iloc[i]
+        if row['vol_ratio'] < VOLUME_MINI or row['adx'] > ADX_MAX:
             i += 1
             continue
 
@@ -128,7 +112,7 @@ def backtest(df, symbole):
             i += 1
             continue
 
-        mise          = CAPITAL_INITIAL * MISE_PCT
+        mise          = capital * mise_pct
         distance_stop = atr * ATR_MULTIPLIER
 
         if signal == "ACHAT":
@@ -152,31 +136,31 @@ def backtest(df, symbole):
 
             if signal == "ACHAT":
                 if not partiel_fait and row_j['high'] >= obj_partiel:
-                    gain_partiel = (obj_partiel - prix) / prix * mise * LEVIER * 0.5
+                    gain_partiel = (obj_partiel - prix) / prix * mise * levier * 0.5
                     partiel_fait = True
                     stop_loss    = prix
                 if row_j['low'] <= stop_loss:
-                    gain_reste = (stop_loss - prix) / prix * mise * LEVIER * (0.5 if partiel_fait else 1.0)
+                    gain_reste = (stop_loss - prix) / prix * mise * levier * (0.5 if partiel_fait else 1.0)
                     gain_brut  = gain_partiel + gain_reste
                     resultat   = "GAGNE" if gain_brut > 0 else "PERDU"
                     break
                 if row_j['high'] >= obj_final:
-                    gain_reste = (obj_final - prix) / prix * mise * LEVIER * 0.5
+                    gain_reste = (obj_final - prix) / prix * mise * levier * 0.5
                     gain_brut  = gain_partiel + gain_reste
                     resultat   = "GAGNE"
                     break
             else:
                 if not partiel_fait and row_j['low'] <= obj_partiel:
-                    gain_partiel = (prix - obj_partiel) / prix * mise * LEVIER * 0.5
+                    gain_partiel = (prix - obj_partiel) / prix * mise * levier * 0.5
                     partiel_fait = True
                     stop_loss    = prix
                 if row_j['high'] >= stop_loss:
-                    gain_reste = (prix - stop_loss) / prix * mise * LEVIER * (0.5 if partiel_fait else 1.0)
+                    gain_reste = (prix - stop_loss) / prix * mise * levier * (0.5 if partiel_fait else 1.0)
                     gain_brut  = gain_partiel + gain_reste
                     resultat   = "GAGNE" if gain_brut > 0 else "PERDU"
                     break
                 if row_j['low'] <= obj_final:
-                    gain_reste = (prix - obj_final) / prix * mise * LEVIER * 0.5
+                    gain_reste = (prix - obj_final) / prix * mise * levier * 0.5
                     gain_brut  = gain_partiel + gain_reste
                     resultat   = "GAGNE"
                     break
@@ -184,45 +168,41 @@ def backtest(df, symbole):
         if resultat == "NEUTRE":
             prix_fin  = df.iloc[min(i + TIMEOUT_BOUGIES, len(df)-1)]['close']
             if signal == "ACHAT":
-                g = (prix_fin - prix) / prix * mise * LEVIER
+                g = (prix_fin - prix) / prix * mise * levier
             else:
-                g = (prix - prix_fin) / prix * mise * LEVIER
+                g = (prix - prix_fin) / prix * mise * levier
             gain_brut = gain_partiel + g * (0.5 if partiel_fait else 1.0)
             resultat  = "GAGNE" if gain_brut > 0 else "PERDU"
             duree     = TIMEOUT_BOUGIES
 
-        gain_net = round(gain_brut - frais * mise * LEVIER, 2)
+        gain_net = round(gain_brut - frais * mise * levier, 2)
         capital  = round(capital + gain_net, 2)
 
         trades.append({
-            'date': df.index[i].strftime('%Y-%m-%d %H:%M'),
-            'signal': signal, 'resultat': resultat,
-            'gain': gain_net, 'partiel': partiel_fait,
-            'duree_h': duree, 'capital': capital,
-            'adx': round(row['adx'], 1),
-            'rsi': round(rsi, 1),
-            'atr_pct': round((atr / prix) * 100, 2)
+            'resultat': resultat,
+            'gain':     gain_net,
+            'capital':  capital,
+            'duree_h':  duree
         })
 
         i = i + duree + 2
 
-    return trades, capital
+    return trades, capital, ruine
 
-def afficher(trades, capital_final, symbole):
+def analyser(trades, capital_final, ruine, levier, mise_pct):
     if not trades:
-        print(f"  Aucun trade sur {symbole}")
         return None
 
     df_t     = pd.DataFrame(trades)
     nb       = len(trades)
     wins     = len(df_t[df_t['resultat'] == 'GAGNE'])
-    losses   = len(df_t[df_t['resultat'] == 'PERDU'])
     win_rate = wins / nb * 100
     gain_tot = df_t['gain'].sum()
     perf     = (capital_final - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100
     avg_win  = df_t[df_t['resultat']=='GAGNE']['gain'].mean() if wins > 0 else 0
-    avg_loss = df_t[df_t['resultat']=='PERDU']['gain'].mean() if losses > 0 else 0
+    avg_loss = df_t[df_t['resultat']=='PERDU']['gain'].mean() if (nb-wins) > 0 else 0
 
+    # Drawdown
     capitals = [CAPITAL_INITIAL] + [t['capital'] for t in trades]
     peak = CAPITAL_INITIAL
     max_dd = 0
@@ -231,82 +211,147 @@ def afficher(trades, capital_final, symbole):
         dd = (c - peak) / peak * 100
         if dd < max_dd: max_dd = dd
 
-    jours = (pd.to_datetime(trades[-1]['date']) - pd.to_datetime(trades[0]['date'])).days
-    sem   = nb / max(jours / 7, 1)
-
-    statut = "✅ POSITIF" if gain_tot > 0 else "❌ NEGATIF"
-
-    print(f"\n  {'='*55}")
-    print(f"  {statut} — {symbole}")
-    print(f"  Trades : {nb} ({round(sem,1)}/sem) | WR : {round(win_rate,1)}%")
-    print(f"  Perf   : {'+' if perf>=0 else ''}{round(perf,2)}% | "
-          f"Gain : {'+' if gain_tot>=0 else ''}{round(gain_tot,2)}EUR | "
-          f"DD : {round(max_dd,1)}%")
-    print(f"  Avg win: +{round(avg_win,2)}EUR | Avg loss: {round(avg_loss,2)}EUR")
-    print(f"  {'='*55}")
+    # Projection journalière
+    gains_par_jour = gain_tot / 24  # 24 jours de données
+    gains_par_semaine = gain_tot / (24/7)
 
     return {
-        'symbole': symbole, 'nb_trades': nb,
-        'trades_semaine': round(sem, 1),
+        'nb_trades': nb,
         'win_rate': round(win_rate, 1),
-        'performance': round(perf, 2),
+        'performance': round(perf, 1),
         'gain_total': round(gain_tot, 2),
+        'gain_jour': round(gains_par_jour, 2),
+        'gain_semaine': round(gains_par_semaine, 2),
+        'avg_win': round(avg_win, 2),
+        'avg_loss': round(avg_loss, 2),
         'drawdown_max': round(max_dd, 1),
-        'nouveau': symbole in ["SOLUSDT","AVAXUSDT","NEARUSDT","MATICUSDT","UNIUSDT","AAVEUSDT"]
+        'capital_final': round(capital_final, 2),
+        'ruine': ruine
     }
 
 def main():
-    print("=" * 55)
-    print("  BACKTESTER MEAN REVERSION V7.1")
-    print(f"  Ratio 1:{RATIO_RR} | Stop ATR×{ATR_MULTIPLIER}")
-    print(f"  {len(MARCHES)} marchés (6 confirmés + 6 nouveaux)")
-    print("=" * 55)
+    print("=" * 60)
+    print("  BACKTESTER COMPARATIF — 3 OPTIONS DE LEVIER/MISE")
+    print("  Objectif : trouver la combinaison pour 10€/jour")
+    print("=" * 60)
 
-    resultats = []
+    # Télécharger les données une seule fois
+    print("\n  Téléchargement des données...")
+    donnees = {}
     for symbole in MARCHES:
         df = get_data(symbole)
-        if df is None or len(df) < 50:
-            print(f"  Skip {symbole} — données insuffisantes")
-            continue
-        df = ajouter_indicateurs(df)
-        trades, capital = backtest(df, symbole)
-        result = afficher(trades, capital, symbole)
-        if result:
-            resultats.append(result)
-        time.sleep(1)
+        if df is not None and len(df) > 50:
+            df = ajouter_indicateurs(df)
+            donnees[symbole] = df
+            print(f"  ✅ {symbole} — {len(df)} bougies")
+        else:
+            print(f"  ❌ {symbole} — ignoré")
+        time.sleep(0.5)
 
-    if resultats:
+    # Tester chaque option sur tous les marchés
+    resultats_options = []
+
+    for option in OPTIONS:
         print(f"\n  {'='*60}")
-        print(f"  SYNTHÈSE GLOBALE — RATIO 1:{RATIO_RR}")
+        print(f"  TEST : {option['nom']}")
         print(f"  {'='*60}")
-        print(f"  {'Marché':10} | {'T':3} | {'T/s':4} | {'WR':6} | {'Perf':7} | {'DD':5} | Statut")
-        print(f"  {'-'*60}")
 
-        confirmes = [r for r in resultats if not r['nouveau']]
-        nouveaux  = [r for r in resultats if r['nouveau']]
+        tous_trades    = []
+        capital_global = CAPITAL_INITIAL
+        ruine_globale  = False
 
-        print(f"  --- MARCHÉS CONFIRMÉS ---")
-        for r in sorted(confirmes, key=lambda x: x['performance'], reverse=True):
-            statut = "✅" if r['performance'] > 0 else "❌"
-            print(f"  {r['symbole']:10} | {r['nb_trades']:3} | "
-                  f"{r['trades_semaine']:4} | {r['win_rate']:5}% | "
-                  f"{'+' if r['performance']>=0 else ''}{r['performance']:5}% | "
-                  f"{r['drawdown_max']:4}% | {statut}")
+        for symbole, df in donnees.items():
+            trades, capital, ruine = backtest(df, option['levier'], option['mise_pct'])
+            if trades:
+                tous_trades.extend(trades)
+                # Calcul gain/perte net sur ce marché
+                gain_marche = sum(t['gain'] for t in trades)
+                wins_m      = sum(1 for t in trades if t['resultat'] == 'GAGNE')
+                wr_m        = wins_m / len(trades) * 100
+                print(f"  {symbole:10} : {len(trades):3} trades | WR {round(wr_m,1):5}% | "
+                      f"Gain {'+' if gain_marche>=0 else ''}{round(gain_marche,2):6}EUR"
+                      f"{' ⚠️ RUINE' if ruine else ''}")
+                if ruine:
+                    ruine_globale = True
 
-        print(f"  --- NOUVEAUX MARCHÉS ---")
-        for r in sorted(nouveaux, key=lambda x: x['performance'], reverse=True):
-            statut = "✅ NOUVEAU" if r['performance'] > 0 else "❌"
-            print(f"  {r['symbole']:10} | {r['nb_trades']:3} | "
-                  f"{r['trades_semaine']:4} | {r['win_rate']:5}% | "
-                  f"{'+' if r['performance']>=0 else ''}{r['performance']:5}% | "
-                  f"{r['drawdown_max']:4}% | {statut}")
+        # Analyse globale de l'option
+        if tous_trades:
+            df_all   = pd.DataFrame(tous_trades)
+            nb       = len(tous_trades)
+            wins     = len(df_all[df_all['resultat'] == 'GAGNE'])
+            wr       = wins / nb * 100
+            gain_tot = df_all['gain'].sum()
+            avg_win  = df_all[df_all['resultat']=='GAGNE']['gain'].mean() if wins > 0 else 0
+            avg_loss = df_all[df_all['resultat']=='PERDU']['gain'].mean() if (nb-wins) > 0 else 0
 
-        print(f"  {'='*60}")
-        top3 = sorted(resultats, key=lambda x: x['performance'], reverse=True)[:3]
-        print(f"\n  TOP 3 MEILLEURS MARCHÉS :")
-        for i, r in enumerate(top3, 1):
-            print(f"  {i}. {r['symbole']} → WR {r['win_rate']}% | "
-                  f"Perf {'+' if r['performance']>=0 else ''}{r['performance']}%")
+            # Drawdown sur capital simulé global
+            cap_sim  = CAPITAL_INITIAL
+            cap_list = [cap_sim]
+            for t in tous_trades:
+                cap_sim += t['gain']
+                cap_list.append(cap_sim)
+            peak   = CAPITAL_INITIAL
+            max_dd = 0
+            for c in cap_list:
+                if c > peak: peak = c
+                dd = (c - peak) / peak * 100
+                if dd < max_dd: max_dd = dd
+
+            gain_jour = gain_tot / 24
+            gain_sem  = gain_tot / (24/7)
+
+            print(f"\n  RÉSULTAT GLOBAL {option['nom']}")
+            print(f"  {'─'*55}")
+            print(f"  Trades total   : {nb}")
+            print(f"  Win Rate global: {round(wr,1)}%")
+            print(f"  Gain total     : {'+' if gain_tot>=0 else ''}{round(gain_tot,2)}EUR sur 24 jours")
+            print(f"  Gain/jour      : {'+' if gain_jour>=0 else ''}{round(gain_jour,2)}EUR")
+            print(f"  Gain/semaine   : {'+' if gain_sem>=0 else ''}{round(gain_sem,2)}EUR")
+            print(f"  Avg win        : +{round(avg_win,2)}EUR")
+            print(f"  Avg loss       : {round(avg_loss,2)}EUR")
+            print(f"  Drawdown max   : {round(max_dd,1)}%")
+            print(f"  Risque ruine   : {'⚠️ OUI — DANGEREUX' if ruine_globale else '✅ NON'}")
+
+            resultats_options.append({
+                'nom':        option['nom'],
+                'levier':     option['levier'],
+                'mise_pct':   option['mise_pct'],
+                'nb_trades':  nb,
+                'win_rate':   round(wr, 1),
+                'gain_total': round(gain_tot, 2),
+                'gain_jour':  round(gain_jour, 2),
+                'gain_sem':   round(gain_sem, 2),
+                'drawdown':   round(max_dd, 1),
+                'ruine':      ruine_globale
+            })
+
+    # SYNTHÈSE FINALE
+    print(f"\n  {'='*60}")
+    print(f"  COMPARAISON FINALE DES 3 OPTIONS")
+    print(f"  Objectif : 10€/jour")
+    print(f"  {'='*60}")
+    print(f"  {'Option':28} | {'WR':6} | {'Gain/j':7} | {'Gain/sem':9} | {'DD':6} | Risque")
+    print(f"  {'-'*60}")
+
+    for r in resultats_options:
+        risque = "⚠️ RUINE" if r['ruine'] else "✅ OK"
+        objectif = "🎯 OUI" if r['gain_jour'] >= 10 else "❌ NON"
+        print(f"  {r['nom']:28} | {r['win_rate']:5}% | "
+              f"{'+' if r['gain_jour']>=0 else ''}{r['gain_jour']:6}€ | "
+              f"{'+' if r['gain_sem']>=0 else ''}{r['gain_sem']:8}€ | "
+              f"{r['drawdown']:5}% | {risque} | {objectif}")
+
+    print(f"\n  Pour atteindre 10€/jour avec 50€ de capital :")
+    print(f"  Capital nécessaire avec option optimale :")
+    if resultats_options:
+        meilleur = max(resultats_options, key=lambda x: x['gain_jour'])
+        if meilleur['gain_jour'] > 0:
+            capital_necessaire = 10 / meilleur['gain_jour'] * CAPITAL_INITIAL
+            print(f"  → Option {meilleur['nom']}")
+            print(f"  → Capital nécessaire : {round(capital_necessaire, 0)}EUR")
+        else:
+            print(f"  → Aucune option n'est rentable sur cette période")
+    print(f"  {'='*60}")
 
 if __name__ == "__main__":
     main()
