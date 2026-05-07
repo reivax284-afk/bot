@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║                BOT MEAN REVERSION V7                         ║
+║                BOT MEAN REVERSION V7.2 — OPTION C                         ║
 ║   RSI < 30 → ACHAT | RSI > 70 → VENTE                      ║
 ║   8 marchés | H1 | Stop ATR×2.5 | Ratio 1:1.5              ║
 ║   Sortie partielle 50% | Kelly 25% | PostgreSQL              ║
@@ -30,11 +30,11 @@ log = logging.getLogger(__name__)
 # CONFIGURATION
 # ══════════════════════════════════════════════════════════════
 
-CAPITAL_INITIAL         = 50.0
-LEVIER                  = 3
-MISE_FIXE_PCT           = 0.01
+CAPITAL_INITIAL         = 215.0     # Capital simulé pour 10EUR/jour
+LEVIER                  = 10        # Option C — levier x10
+MISE_FIXE_PCT           = 0.20      # 20% du capital par trade
 KELLY_FRACTION          = 0.25
-KELLY_CAP               = 0.05
+KELLY_CAP               = 0.20      # Cap Kelly aligné sur mise 20%
 MIN_TRADES_KELLY        = 30
 ATR_MULTIPLIER          = 2.5
 RATIO_RR                = 2.0       # Ratio 1:2
@@ -50,50 +50,45 @@ VOLUME_MINI             = 0.40
 ADX_MAX                 = 40    # Pas de mean reversion si tendance trop forte
 
 # Kill Switch
-MAX_PERTES_CONSECUTIVES = 3
-SEUIL_RUINE             = 0.50
+MAX_PERTES_CONSECUTIVES = 2         # Plus strict avec levier élevé
+SEUIL_RUINE             = 0.30      # Arrêt si -30% du capital
 PAUSE_DUREE             = 86400
 
 # 8 marchés variés pour plus de signaux
 MARCHES = [
-    # 6 marchés confirmés
-    "BTCUSDT",   # WR 78.6%
-    "ETHUSDT",   # WR 64.3%
-    "XRPUSDT",   # WR 75%
-    "ATOMUSDT",  # WR 72.7%
-    "LINKUSDT",  # WR 71.4%
-    "ADAUSDT",   # WR 63.6%
-    # 6 nouveaux marchés à tester
-    "SOLUSDT",   # Très volatile
-    "AVAXUSDT",  # Volatile, grosse liquidité
-    "NEARUSDT",  # Volatile
-    "MATICUSDT", # Polygon
-    "UNIUSDT",   # DeFi volatile
-    "AAVEUSDT"   # DeFi très volatile
+    # TOP 10 marchés validés par backtest
+    "BTCUSDT",   # WR 78.6% ✅
+    "ETHUSDT",   # WR 64.3% ✅
+    "XRPUSDT",   # WR 75.0% ✅
+    "ATOMUSDT",  # WR 72.7% ✅
+    "LINKUSDT",  # WR 71.4% ✅
+    "ADAUSDT",   # WR 63.6% ✅
+    "SOLUSDT",   # WR 84.6% ✅ MEILLEUR
+    "AVAXUSDT",  # WR 66.7% ✅
+    "NEARUSDT",  # WR 75.0% ✅
+    "AAVEUSDT"   # WR 66.7% ✅
 ]
 
 KRAKEN_SYMBOLS = {
-    "BTCUSDT":   "XXBTZUSD",
-    "ETHUSDT":   "XETHZUSD",
-    "XRPUSDT":   "XXRPZUSD",
-    "ATOMUSDT":  "ATOMUSD",
-    "LINKUSDT":  "LINKUSD",
-    "ADAUSDT":   "ADAUSD",
-    "SOLUSDT":   "SOLUSD",
-    "AVAXUSDT":  "AVAXUSD",
-    "NEARUSDT":  "NEARUSD",
-    "MATICUSDT": "MATICUSD",
-    "UNIUSDT":   "UNIUSD",
-    "AAVEUSDT":  "AAVEUSD"
+    "BTCUSDT":  "XXBTZUSD",
+    "ETHUSDT":  "XETHZUSD",
+    "XRPUSDT":  "XXRPZUSD",
+    "ATOMUSDT": "ATOMUSD",
+    "LINKUSDT": "LINKUSD",
+    "ADAUSDT":  "ADAUSD",
+    "SOLUSDT":  "SOLUSD",
+    "AVAXUSDT": "AVAXUSD",
+    "NEARUSDT": "NEARUSD",
+    "AAVEUSDT": "AAVEUSD"
 }
 
 log.info("=" * 55)
-log.info("  BOT MEAN REVERSION V7")
+log.info("  BOT MEAN REVERSION V7.2 — OPTION C")
 log.info(f"  RSI < {RSI_ACHAT} → ACHAT | RSI > {RSI_VENTE} → VENTE")
 log.info(f"  ADX max : {ADX_MAX} (pas de mean rev en tendance forte)")
 log.info(f"  Stop ATR×{ATR_MULTIPLIER} | Ratio 1:{RATIO_RR} | Partiel 1:{RATIO_PARTIEL}")
 log.info(f"  Kelly {KELLY_FRACTION*100}% après {MIN_TRADES_KELLY} trades")
-log.info(f"  Marches : {len(MARCHES)} cryptos")
+log.info(f"  Marches : {len(MARCHES)} cryptos validés par backtest")
 log.info("=" * 55)
 
 # ══════════════════════════════════════════════════════════════
@@ -462,7 +457,7 @@ def afficher_tableau_de_bord(etat):
     win_rate = (etat["nb_wins"] / etat["nb_trades"] * 100) if etat["nb_trades"] > 0 else 0
     perf     = ((etat["capital"] - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100)
     log.info(f"\n  {'='*55}")
-    log.info(f"  BOT MEAN REVERSION V7 — TABLEAU DE BORD")
+    log.info(f"  BOT MEAN REVERSION V7.2 — OPTION C — TABLEAU DE BORD")
     log.info(f"  {'='*55}")
     log.info(f"  Capital actuel : {round(etat['capital'],2)}EUR "
              f"({'+' if perf >= 0 else ''}{round(perf,2)}%)")
