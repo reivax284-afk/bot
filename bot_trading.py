@@ -3,7 +3,7 @@
 ║                    BOT ULTIME V4.2                           ║
 ║     BTC + ETH | H1 | ADX/ATR/RSI pro via ta                 ║
 ║     Kelly après 30 trades | Score 18/30 | Trailing Stop      ║
-║     Pause persistante | Logs fichier | Kill Switch           ║
+║     PostgreSQL Railway | Pause persistante | Kill Switch      ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -17,6 +17,7 @@ from ta.trend import ADXIndicator
 from ta.volatility import AverageTrueRange
 from ta.momentum import RSIIndicator
 from datetime import datetime
+from database import init_database, charger_etat, sauvegarder_etat, enregistrer_trade
 
 # ══════════════════════════════════════════════════════════════
 # LOGGING
@@ -25,9 +26,7 @@ from datetime import datetime
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
+    handlers=[logging.StreamHandler()]
 )
 log = logging.getLogger(__name__)
 
@@ -37,26 +36,25 @@ log = logging.getLogger(__name__)
 
 CAPITAL_INITIAL         = 50.0
 LEVIER                  = 3
-RISQUE_PAR_TRADE        = 0.01      # 1% du capital
-ATR_MULTIPLIER          = 2.0       # Stop = ATR × 2
-RATIO_RR                = 2.0       # Objectif = Stop × 2
+RISQUE_PAR_TRADE        = 0.01
+ATR_MULTIPLIER          = 2.0
+RATIO_RR                = 2.0
 ATR_PERIODE             = 14
 KELLY_FRACTION          = 0.25
-KELLY_CAP               = 0.05      # Max 5% du capital
-MISE_FIXE_PCT           = 0.01      # 1% fixe avant 30 trades
-MIN_TRADES_KELLY        = 30        # Trades minimum avant Kelly
-PAUSE                   = 120       # 2 min entre analyses
+KELLY_CAP               = 0.05
+MISE_FIXE_PCT           = 0.01
+MIN_TRADES_KELLY        = 30
+PAUSE                   = 120
 ADX_SEUIL               = 20
 VOLUME_MINI             = 0.50
-SCORE_MIN               = 18        # 18/30 minimum (60%)
-TIMEOUT_TRADE           = 6 * 3600  # 6h max par trade
-CHECK_INTERVAL          = 10        # Vérification toutes les 10s
+SCORE_MIN               = 18
+TIMEOUT_TRADE           = 6 * 3600
+CHECK_INTERVAL          = 10
 MAX_PERTES_CONSECUTIVES = 3
-SEUIL_RUINE             = 0.50      # Arrêt si capital < 50%
-PAUSE_DUREE             = 86400     # 24h en secondes
+SEUIL_RUINE             = 0.50
+PAUSE_DUREE             = 86400
 
 MARCHES = ["BTCUSDT", "ETHUSDT"]
-
 KRAKEN_SYMBOLS = {
     "BTCUSDT": "XXBTZUSD",
     "ETHUSDT": "XETHZUSD"
@@ -71,6 +69,7 @@ log.info(f"  ATR x{ATR_MULTIPLIER} | Ratio 1:{int(RATIO_RR)}")
 log.info(f"  Score min   : {SCORE_MIN}/30")
 log.info(f"  Kill Switch : {MAX_PERTES_CONSECUTIVES} pertes → pause 24h")
 log.info(f"  Seuil ruine : -{(1-SEUIL_RUINE)*100}% capital")
+log.info(f"  Persistance : PostgreSQL Railway")
 log.info(f"  Marches     : {', '.join(MARCHES)}")
 log.info("=" * 55)
 
@@ -109,9 +108,9 @@ def get_klines(symbole, limite=100):
             return None
         candles = result[keys[0]]
         df = pd.DataFrame(candles, columns=[
-            'time', 'open', 'high', 'low', 'close', 'vwap', 'volume', 'count'
+            'time','open','high','low','close','vwap','volume','count'
         ])
-        df = df.astype({'high': float, 'low': float, 'close': float, 'volume': float})
+        df = df.astype({'high':float,'low':float,'close':float,'volume':float})
         return df.tail(limite).reset_index(drop=True)
     except Exception as e:
         log.error(f"Erreur klines {symbole} : {e}")
@@ -122,37 +121,27 @@ def get_klines(symbole, limite=100):
 # ══════════════════════════════════════════════════════════════
 
 def calculer_adx(df, periode=14):
-    """ADX professionnel via ta (formule Wilder correcte)"""
     try:
-        adx_ind = ADXIndicator(
-            high=df['high'], low=df['low'], close=df['close'], window=periode
-        )
-        val = adx_ind.adx().iloc[-1]
+        ind = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=periode)
+        val = ind.adx().iloc[-1]
         return round(float(val), 2) if not pd.isna(val) else 0
-    except Exception as e:
-        log.error(f"Erreur ADX : {e}")
+    except:
         return 0
 
 def calculer_atr(df, periode=14):
-    """ATR professionnel via ta"""
     try:
-        atr_ind = AverageTrueRange(
-            high=df['high'], low=df['low'], close=df['close'], window=periode
-        )
-        val = atr_ind.average_true_range().iloc[-1]
+        ind = AverageTrueRange(high=df['high'], low=df['low'], close=df['close'], window=periode)
+        val = ind.average_true_range().iloc[-1]
         return round(float(val), 8) if not pd.isna(val) else 0
-    except Exception as e:
-        log.error(f"Erreur ATR : {e}")
+    except:
         return 0
 
 def calculer_rsi(df, periode=14):
-    """RSI professionnel via ta"""
     try:
-        rsi_ind = RSIIndicator(close=df['close'], window=periode)
-        val = rsi_ind.rsi().iloc[-1]
+        ind = RSIIndicator(close=df['close'], window=periode)
+        val = ind.rsi().iloc[-1]
         return round(float(val), 2) if not pd.isna(val) else 50
-    except Exception as e:
-        log.error(f"Erreur RSI : {e}")
+    except:
         return 50
 
 def verifier_volume(df):
@@ -169,30 +158,23 @@ def verifier_volume(df):
 # ══════════════════════════════════════════════════════════════
 
 def calculer_stop_dynamique(df, prix_entree, direction, atr):
-    lookback  = 10
-    highs     = df['high'].tolist()
-    lows      = df['low'].tolist()
-
+    lookback = 10
+    highs = df['high'].tolist()
+    lows  = df['low'].tolist()
     if direction == "ACHAT":
         stop_atr       = prix_entree - (atr * ATR_MULTIPLIER)
         stop_structure = min(lows[-lookback:])
-        stop_final     = min(stop_atr, stop_structure)
+        return round(min(stop_atr, stop_structure), 8)
     else:
         stop_atr       = prix_entree + (atr * ATR_MULTIPLIER)
         stop_structure = max(highs[-lookback:])
-        stop_final     = max(stop_atr, stop_structure)
-
-    return round(stop_final, 8)
+        return round(max(stop_atr, stop_structure), 8)
 
 # ══════════════════════════════════════════════════════════════
 # KELLY FRACTIONNÉ
 # ══════════════════════════════════════════════════════════════
 
 def calculer_mise(capital, nb_trades, win_rate, avg_win_pct, avg_loss_pct):
-    """
-    Mise fixe 1% les 30 premiers trades.
-    Kelly fractionné 25% ensuite.
-    """
     if nb_trades < MIN_TRADES_KELLY:
         log.info(f"  Mise fixe 1% (trade {nb_trades}/{MIN_TRADES_KELLY})")
         mise = capital * MISE_FIXE_PCT
@@ -208,7 +190,6 @@ def calculer_mise(capital, nb_trades, win_rate, avg_win_pct, avg_loss_pct):
             kelly_frac = max(0, min(kelly_frac, KELLY_CAP))
             mise       = capital * kelly_frac
             log.info(f"  Kelly {round(kelly_frac*100,2)}% → mise {round(mise,2)}EUR")
-
     mise = max(mise, 5.0)
     mise = min(mise, capital * 0.30)
     return round(mise, 2)
@@ -223,32 +204,27 @@ def analyser_marche(symbole):
         log.warning(f"  {symbole} : données insuffisantes")
         return 0, "NEUTRE", {}
 
-    # ADX
     adx = calculer_adx(df)
     if adx < ADX_SEUIL:
         log.info(f"  {symbole} : ADX {adx} < {ADX_SEUIL} → RANGE → pas de trade")
         return 0, "NEUTRE", {"adx": adx}
 
-    # Volume
     volume_ok, volume_ratio = verifier_volume(df)
     if not volume_ok:
         log.info(f"  {symbole} : Volume {volume_ratio}% < 50% → pas de trade")
         return 0, "NEUTRE", {"adx": adx}
 
-    # ATR et RSI
     atr     = calculer_atr(df)
     rsi     = calculer_rsi(df)
     closes  = df['close'].tolist()
     atr_pct = (atr / closes[-1]) * 100 if closes[-1] > 0 else 0
 
-    # Score RSI
     if rsi < 30:   score_rsi, direction_rsi = 10, "ACHAT"
     elif rsi < 40: score_rsi, direction_rsi = 6,  "ACHAT"
     elif rsi > 70: score_rsi, direction_rsi = 10, "VENTE"
     elif rsi > 60: score_rsi, direction_rsi = 6,  "VENTE"
     else:          score_rsi, direction_rsi = 2,  "NEUTRE"
 
-    # Moyenne Mobile
     ma_courte    = sum(closes[-10:]) / 10
     ma_longue    = sum(closes[-30:]) / 30
     direction_ma = "ACHAT" if ma_courte > ma_longue else "VENTE"
@@ -257,13 +233,11 @@ def analyser_marche(symbole):
     elif ecart_ma > 0.5: score_ma = 6
     else:                score_ma = 2
 
-    # Score volatilité ATR
     if atr_pct > 2:     score_vol = 10
     elif atr_pct > 1:   score_vol = 6
     elif atr_pct > 0.5: score_vol = 3
     else:               score_vol = 1
 
-    # Direction finale — RSI ET MA doivent être d'accord
     if direction_rsi == direction_ma and direction_rsi != "NEUTRE":
         direction_finale = direction_rsi
         score_total      = score_rsi + score_ma + score_vol
@@ -274,7 +248,6 @@ def analyser_marche(symbole):
         direction_finale = "NEUTRE"
         score_total      = 0
 
-    # Bonus ADX fort
     if adx > 25:
         score_total = min(score_total + 3, 30)
     score_total = min(score_total, 30)
@@ -293,7 +266,6 @@ def analyser_marche(symbole):
 def choisir_meilleur_marche():
     log.info(f"[{datetime.now().strftime('%H:%M:%S')}] Analyse des marches...")
     resultats = {}
-
     for marche in MARCHES:
         score, direction, details = analyser_marche(marche)
         resultats[marche] = {"score": score, "direction": direction, "details": details}
@@ -326,28 +298,25 @@ def choisir_meilleur_marche():
 def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
     prix_entree = get_prix_actuel(symbole)
     if prix_entree is None:
-        return "ERREUR", 0, 0
+        return "ERREUR", 0, 0, {}
 
     df  = details.get("df")
     atr = details.get("atr", 0)
 
-    # Stop dynamique ATR + Structure
     stop_loss         = calculer_stop_dynamique(df, prix_entree, direction, atr)
     distance_stop     = abs(prix_entree - stop_loss)
     distance_stop_pct = (distance_stop / prix_entree) * 100
 
-    # Objectif ratio 1:2
     if direction == "ACHAT":
         prix_objectif = round(prix_entree + (distance_stop * RATIO_RR), 8)
     else:
         prix_objectif = round(prix_entree - (distance_stop * RATIO_RR), 8)
 
-    # Taille de position
     win_rate = etat["nb_wins"] / etat["nb_trades"] if etat["nb_trades"] > 0 else 0.50
     avg_win  = etat["avg_win_pct"] if etat["avg_win_pct"] > 0 else distance_stop_pct * RATIO_RR
     avg_loss = etat["avg_loss_pct"] if etat["avg_loss_pct"] > 0 else distance_stop_pct
+    mise     = calculer_mise(capital, etat["nb_trades"], win_rate, avg_win, avg_loss)
 
-    mise              = calculer_mise(capital, etat["nb_trades"], win_rate, avg_win, avg_loss)
     gain_potentiel    = round(mise * LEVIER * (distance_stop_pct / 100) * RATIO_RR, 2)
     perte_potentielle = round(mise * LEVIER * (distance_stop_pct / 100), 2)
 
@@ -366,6 +335,7 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
     stop_actuel   = stop_loss
     meilleur_prix = prix_entree
     dernier_log   = 0
+    prix_sortie   = prix_entree
 
     while True:
         time.sleep(CHECK_INTERVAL)
@@ -374,7 +344,8 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
         if prix_actuel is None:
             continue
 
-        # Trailing Stop
+        prix_sortie = prix_actuel
+
         if direction == "ACHAT":
             if prix_actuel > meilleur_prix:
                 meilleur_prix = prix_actuel
@@ -396,49 +367,52 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
 
         duree = int((time.time() - debut) / 60)
 
-        # Log toutes les minutes
         if time.time() - dernier_log >= 60:
             log.info(f"  [{datetime.now().strftime('%H:%M:%S')}] {symbole}: {prix_actuel} | "
                      f"PnL: {'+' if pnl >= 0 else ''}{pnl}EUR | "
                      f"Stop: {stop_actuel} | {duree}min")
             dernier_log = time.time()
 
+        trade_info = {
+            "prix_entree": prix_entree,
+            "prix_sortie": prix_sortie,
+            "stop_loss": stop_loss,
+            "objectif": prix_objectif,
+            "duree_minutes": duree
+        }
+
         if atteint_objectif:
             log.info(f"\n  OBJECTIF ATTEINT ! +{pnl}EUR")
-            return "GAGNE", pnl, mise
+            return "GAGNE", pnl, mise, trade_info
 
         if atteint_stop:
             log.info(f"\n  STOP-LOSS ATTEINT ! {pnl}EUR")
-            return "PERDU", pnl, mise
+            return "PERDU", pnl, mise, trade_info
 
         if time.time() - debut >= TIMEOUT_TRADE:
             log.info(f"\n  TIMEOUT {int(TIMEOUT_TRADE/3600)}H — Fermeture : "
                      f"{'+' if pnl >= 0 else ''}{pnl}EUR")
-            return ("GAGNE" if pnl > 0 else "PERDU"), pnl, mise
+            return ("GAGNE" if pnl > 0 else "PERDU"), pnl, mise, trade_info
 
 # ══════════════════════════════════════════════════════════════
-# KILL SWITCH avec pause persistante
+# KILL SWITCH avec pause persistante PostgreSQL
 # ══════════════════════════════════════════════════════════════
 
 def verifier_kill_switch(etat, capital):
-    # Seuil de ruine
     if capital < CAPITAL_INITIAL * SEUIL_RUINE:
         log.critical(f"SEUIL DE RUINE ATTEINT ! Capital {capital}EUR")
         return "RUINE"
 
-    # Vérification pause active (persistante via timestamp)
     pause_until = etat.get("pause_until", 0)
     if time.time() < pause_until:
         restant = int((pause_until - time.time()) / 60)
-        log.info(f"  En pause après pertes — {restant} minutes restantes")
+        log.info(f"  En pause — {restant} minutes restantes")
         time.sleep(60)
         return "PAUSE"
 
-    # 3 pertes consécutives → pause 24h persistante
     if etat["pertes_consecutives"] >= MAX_PERTES_CONSECUTIVES:
         log.warning(f"KILL SWITCH — {MAX_PERTES_CONSECUTIVES} pertes consecutives !")
-        log.warning(f"Pause 24h enregistrée dans etat_bot.json")
-        etat["pause_until"]          = time.time() + PAUSE_DUREE
+        etat["pause_until"]          = int(time.time()) + PAUSE_DUREE
         etat["pertes_consecutives"]  = 0
         sauvegarder_etat(etat)
         return "PAUSE"
@@ -446,28 +420,8 @@ def verifier_kill_switch(etat, capital):
     return "OK"
 
 # ══════════════════════════════════════════════════════════════
-# GESTION DE L'ÉTAT
+# TABLEAU DE BORD
 # ══════════════════════════════════════════════════════════════
-
-def charger_etat():
-    if os.path.exists("etat_bot.json"):
-        with open("etat_bot.json", "r") as f:
-            return json.load(f)
-    return {
-        "capital": CAPITAL_INITIAL,
-        "total_gagne": 0.0, "total_perdu": 0.0,
-        "cumul_net": 0.0, "nb_trades": 0,
-        "nb_wins": 0, "nb_losses": 0,
-        "nb_skips": 0, "pertes_consecutives": 0,
-        "avg_win_pct": 0.0, "avg_loss_pct": 0.0,
-        "pause_until": 0,
-        "historique": []
-    }
-
-def sauvegarder_etat(etat):
-    etat_a_sauver = {k: v for k, v in etat.items() if k != "df"}
-    with open("etat_bot.json", "w") as f:
-        json.dump(etat_a_sauver, f, indent=2, ensure_ascii=False)
 
 def afficher_tableau_de_bord(etat):
     win_rate = (etat["nb_wins"] / etat["nb_trades"] * 100) if etat["nb_trades"] > 0 else 0
@@ -475,17 +429,17 @@ def afficher_tableau_de_bord(etat):
     log.info(f"\n  {'='*55}")
     log.info(f"  BOT ULTIME V4.2 — TABLEAU DE BORD")
     log.info(f"  {'='*55}")
-    log.info(f"  Capital actuel : {round(etat['capital'], 2)}EUR "
-             f"({'+' if perf >= 0 else ''}{round(perf, 2)}%)")
+    log.info(f"  Capital actuel : {round(etat['capital'],2)}EUR "
+             f"({'+' if perf >= 0 else ''}{round(perf,2)}%)")
     log.info(f"  Trades total   : {etat['nb_trades']}")
     log.info(f"  Victoires      : {etat['nb_wins']} ({win_rate:.1f}%)")
     log.info(f"  Defaites       : {etat['nb_losses']}")
     log.info(f"  Pertes consec. : {etat['pertes_consecutives']}/{MAX_PERTES_CONSECUTIVES}")
-    log.info(f"  Kelly actif    : {'Non (< 30 trades)' if etat['nb_trades'] < MIN_TRADES_KELLY else 'Oui'}")
-    log.info(f"  Total gagne    : +{round(etat['total_gagne'], 2)}EUR")
-    log.info(f"  Total perdu    : -{round(etat['total_perdu'], 2)}EUR")
-    log.info(f"  BENEFICE NET   : {'+' if etat['cumul_net'] >= 0 else ''}{round(etat['cumul_net'], 2)}EUR")
-    if etat["historique"]:
+    log.info(f"  Kelly actif    : {'Non (<30 trades)' if etat['nb_trades'] < MIN_TRADES_KELLY else 'Oui'}")
+    log.info(f"  Total gagne    : +{round(etat['total_gagne'],2)}EUR")
+    log.info(f"  Total perdu    : -{round(etat['total_perdu'],2)}EUR")
+    log.info(f"  BENEFICE NET   : {'+' if etat['cumul_net'] >= 0 else ''}{round(etat['cumul_net'],2)}EUR")
+    if etat.get("historique"):
         log.info(f"\n  Derniers trades :")
         for h in etat["historique"][-5:]:
             icone = "OK" if h["resultat"] == "GAGNE" else "XX"
@@ -501,6 +455,10 @@ def afficher_tableau_de_bord(etat):
 
 def demarrer_bot():
     log.info(f"DEMARRAGE — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # Initialisation PostgreSQL
+    init_database()
+
     etat = charger_etat()
     afficher_tableau_de_bord(etat)
 
@@ -510,6 +468,7 @@ def demarrer_bot():
             if statut == "RUINE":
                 break
             if statut == "PAUSE":
+                etat = charger_etat()
                 continue
 
             symbole, direction, details = choisir_meilleur_marche()
@@ -522,7 +481,7 @@ def demarrer_bot():
                 continue
 
             etat["nb_trades"] += 1
-            resultat, gain, mise = simuler_trade(
+            resultat, gain, mise, trade_info = simuler_trade(
                 symbole, direction, etat["nb_trades"],
                 etat["capital"], details, etat
             )
@@ -558,17 +517,37 @@ def demarrer_bot():
                         (etat["avg_loss_pct"] * (etat["nb_losses"]-1) + perte_pct) / etat["nb_losses"], 4
                     )
 
-            etat["historique"].append({
-                "heure":     datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "marche":    symbole,
-                "direction": direction,
-                "resultat":  resultat,
-                "gain":      round(gain, 2),
-                "mise":      round(mise, 2),
-                "capital":   etat["capital"]
+            # Enregistrement trade dans PostgreSQL
+            enregistrer_trade({
+                'marche':        symbole,
+                'direction':     direction,
+                'resultat':      resultat,
+                'prix_entree':   trade_info['prix_entree'],
+                'prix_sortie':   trade_info['prix_sortie'],
+                'stop_loss':     trade_info['stop_loss'],
+                'objectif':      trade_info['objectif'],
+                'mise':          mise,
+                'gain':          round(gain, 2),
+                'capital_apres': etat['capital'],
+                'duree_minutes': trade_info['duree_minutes'],
+                'score':         details.get('score_total'),
+                'adx':           details.get('adx'),
+                'atr':           details.get('atr'),
+                'rsi':           details.get('rsi'),
             })
 
             sauvegarder_etat(etat)
+
+            etat['historique'].append({
+                'heure':     datetime.now().strftime('%Y-%m-%d %H:%M'),
+                'marche':    symbole,
+                'direction': direction,
+                'resultat':  resultat,
+                'gain':      round(gain, 2),
+                'mise':      round(mise, 2),
+                'capital':   etat['capital']
+            })
+
             afficher_tableau_de_bord(etat)
 
             log.info(f"  Pause 2 minutes avant prochain trade...")
