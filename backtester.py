@@ -1,8 +1,8 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║                    BACKTESTER V1                             ║
-║     Stratégie BOT ULTIME V4.2 sur données historiques        ║
-║     BTC + ETH | H1 | 6 mois | Frais + Slippage réels        ║
+║              BACKTESTER DONCHIAN 55/20                       ║
+║         Stratégie Turtle Traders sur BTC + ETH               ║
+║         H1 | ATR Stop | Frais + Slippage réels               ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -11,51 +11,42 @@ import pandas as pd
 import time
 from ta.trend import ADXIndicator
 from ta.volatility import AverageTrueRange
-from ta.momentum import RSIIndicator
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # ══════════════════════════════════════════════════════════════
-# PARAMÈTRES — IDENTIQUES AU BOT ULTIME V4.2
+# PARAMÈTRES
 # ══════════════════════════════════════════════════════════════
 
 CAPITAL_INITIAL  = 50.0
 LEVIER           = 3
-MISE_PCT         = 0.01      # 1% du capital (avant Kelly)
+MISE_PCT         = 0.01
 ATR_MULTIPLIER   = 2.0
-RATIO_RR         = 2.0
 ADX_SEUIL        = 20
 VOLUME_MINI      = 0.50
-SCORE_MIN        = 18
-FRAIS_PCT        = 0.0004    # 0.04% par côté Binance taker
-SLIPPAGE_PCT     = 0.0002    # 0.02% slippage estimé
+FRAIS_PCT        = 0.0004
+SLIPPAGE_PCT     = 0.0002
+DONCHIAN_ENTREE  = 55
+DONCHIAN_SORTIE  = 20
 
 MARCHES = ["BTCUSDT", "ETHUSDT"]
-
 KRAKEN_SYMBOLS = {
     "BTCUSDT": "XXBTZUSD",
     "ETHUSDT": "XETHZUSD"
 }
 
 # ══════════════════════════════════════════════════════════════
-# RÉCUPÉRATION DES DONNÉES HISTORIQUES
+# DONNÉES
 # ══════════════════════════════════════════════════════════════
 
-def get_historical_data(symbole, jours=180):
-    """
-    Récupère les données historiques H1 via Kraken.
-    Kraken limite à 720 bougies par requête.
-    """
+def get_historical_data(symbole, jours=30):
     kraken_symbol = KRAKEN_SYMBOLS.get(symbole, symbole)
     url    = "https://api.kraken.com/0/public/OHLC"
-    since  = int((datetime.now() - timedelta(days=jours)).timestamp())
-    params = {"pair": kraken_symbol, "interval": 60, "since": since}
-
-    print(f"  Téléchargement {symbole} ({jours} jours)...")
+    params = {"pair": kraken_symbol, "interval": 60}
+    print(f"  Téléchargement {symbole}...")
     try:
         r    = requests.get(url, params=params, timeout=30)
         data = r.json()
         if data.get("error") and data["error"]:
-            print(f"  Erreur API : {data['error']}")
             return None
         result = data.get("result", {})
         keys   = [k for k in result.keys() if k != "last"]
@@ -66,8 +57,8 @@ def get_historical_data(symbole, jours=180):
             'time','open','high','low','close','vwap','volume','count'
         ])
         df = df.astype({
-            'time': int, 'open': float, 'high': float,
-            'low': float, 'close': float, 'volume': float
+            'time': int, 'high': float, 'low': float,
+            'close': float, 'volume': float
         })
         df['datetime'] = pd.to_datetime(df['time'], unit='s')
         df = df.set_index('datetime').sort_index()
@@ -77,309 +68,197 @@ def get_historical_data(symbole, jours=180):
         print(f"  Erreur : {e}")
         return None
 
-# ══════════════════════════════════════════════════════════════
-# CALCUL DES INDICATEURS
-# ══════════════════════════════════════════════════════════════
-
 def ajouter_indicateurs(df):
-    """Ajoute ADX, ATR, RSI, MA sur le DataFrame."""
     df = df.copy()
-
-    # ADX
-    adx_ind  = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14)
+    adx_ind   = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14)
+    atr_ind   = AverageTrueRange(high=df['high'], low=df['low'], close=df['close'], window=14)
     df['adx'] = adx_ind.adx()
-
-    # ATR
-    atr_ind  = AverageTrueRange(high=df['high'], low=df['low'], close=df['close'], window=14)
     df['atr'] = atr_ind.average_true_range()
-
-    # RSI
-    rsi_ind  = RSIIndicator(close=df['close'], window=14)
-    df['rsi'] = rsi_ind.rsi()
-
-    # MA 10 et 30
-    df['ma10'] = df['close'].rolling(10).mean()
-    df['ma30'] = df['close'].rolling(30).mean()
-
-    # Volume moyen 24h (24 bougies H1)
     df['vol_moy_24h'] = df['volume'].rolling(24).mean()
     df['vol_ratio']   = df['volume'] / df['vol_moy_24h']
 
-    # ATR en %
-    df['atr_pct'] = df['atr'] / df['close'] * 100
+    # Niveaux Donchian
+    df['don_haut_55'] = df['high'].shift(1).rolling(DONCHIAN_ENTREE).max()
+    df['don_bas_55']  = df['low'].shift(1).rolling(DONCHIAN_ENTREE).min()
+    df['don_haut_20'] = df['high'].shift(1).rolling(DONCHIAN_SORTIE).max()
+    df['don_bas_20']  = df['low'].shift(1).rolling(DONCHIAN_SORTIE).min()
 
     return df.dropna()
 
 # ══════════════════════════════════════════════════════════════
-# GÉNÉRATION DES SIGNAUX
+# BACKTEST DONCHIAN
 # ══════════════════════════════════════════════════════════════
 
-def generer_signal(row):
-    """
-    Applique exactement la même logique que le Bot Ultime V4.2.
-    Retourne (score, direction) pour chaque bougie.
-    """
-    # Filtre ADX
-    if row['adx'] < ADX_SEUIL:
-        return 0, "NEUTRE"
-
-    # Filtre Volume
-    if row['vol_ratio'] < VOLUME_MINI:
-        return 0, "NEUTRE"
-
-    # Score RSI
-    rsi = row['rsi']
-    if rsi < 30:   score_rsi, direction_rsi = 10, "ACHAT"
-    elif rsi < 40: score_rsi, direction_rsi = 6,  "ACHAT"
-    elif rsi > 70: score_rsi, direction_rsi = 10, "VENTE"
-    elif rsi > 60: score_rsi, direction_rsi = 6,  "VENTE"
-    else:          score_rsi, direction_rsi = 2,  "NEUTRE"
-
-    # Score MA
-    direction_ma = "ACHAT" if row['ma10'] > row['ma30'] else "VENTE"
-    ecart_ma     = abs(row['ma10'] - row['ma30']) / row['ma30'] * 100
-    if ecart_ma > 1:     score_ma = 10
-    elif ecart_ma > 0.5: score_ma = 6
-    else:                score_ma = 2
-
-    # Score ATR
-    atr_pct = row['atr_pct']
-    if atr_pct > 2:     score_vol = 10
-    elif atr_pct > 1:   score_vol = 6
-    elif atr_pct > 0.5: score_vol = 3
-    else:               score_vol = 1
-
-    # Direction finale
-    if direction_rsi == direction_ma and direction_rsi != "NEUTRE":
-        direction_finale = direction_rsi
-        score_total      = score_rsi + score_ma + score_vol
-    elif direction_ma != "NEUTRE":
-        direction_finale = direction_ma
-        score_total      = score_ma + score_vol
-    else:
-        direction_finale = "NEUTRE"
-        score_total      = 0
-
-    # Bonus ADX fort
-    if row['adx'] > 25:
-        score_total = min(score_total + 3, 30)
-
-    score_total = min(score_total, 30)
-    return score_total, direction_finale
-
-# ══════════════════════════════════════════════════════════════
-# SIMULATION DU TRADE
-# ══════════════════════════════════════════════════════════════
-
-def simuler_trade_backtest(df, idx_entree, direction):
-    """
-    Simule un trade depuis l'index d'entrée.
-    Retourne (gain_net, duree, idx_sortie).
-    """
-    row_entree  = df.iloc[idx_entree]
-    prix_entree = row_entree['close']
-    atr         = row_entree['atr']
-
-    # Stop dynamique ATR + Structure (10 dernières bougies)
-    lookback = min(10, idx_entree)
-    if direction == "ACHAT":
-        stop_atr       = prix_entree - (atr * ATR_MULTIPLIER)
-        stop_structure = df['low'].iloc[idx_entree-lookback:idx_entree].min()
-        stop_loss      = min(stop_atr, stop_structure)
-        prix_objectif  = prix_entree + (abs(prix_entree - stop_loss) * RATIO_RR)
-    else:
-        stop_atr       = prix_entree + (atr * ATR_MULTIPLIER)
-        stop_structure = df['high'].iloc[idx_entree-lookback:idx_entree].max()
-        stop_loss      = max(stop_atr, stop_structure)
-        prix_objectif  = prix_entree - (abs(prix_entree - stop_loss) * RATIO_RR)
-
-    distance_stop = abs(prix_entree - stop_loss)
-    mise          = CAPITAL_INITIAL * MISE_PCT
-
-    # Frais aller-retour + slippage
-    frais_total = (FRAIS_PCT + SLIPPAGE_PCT) * 2 * mise * LEVIER
-
-    # Simulation bougie par bougie (max 6h = 6 bougies H1)
-    max_bougies = 6
-    for i in range(idx_entree + 1, min(idx_entree + max_bougies + 1, len(df))):
-        row = df.iloc[i]
-        if direction == "ACHAT":
-            if row['low'] <= stop_loss:
-                pnl_brut = (stop_loss - prix_entree) / prix_entree * mise * LEVIER
-                return round(pnl_brut - frais_total, 2), i - idx_entree, i, "PERDU"
-            if row['high'] >= prix_objectif:
-                pnl_brut = (prix_objectif - prix_entree) / prix_entree * mise * LEVIER
-                return round(pnl_brut - frais_total, 2), i - idx_entree, i, "GAGNE"
-        else:
-            if row['high'] >= stop_loss:
-                pnl_brut = (prix_entree - stop_loss) / prix_entree * mise * LEVIER
-                return round(pnl_brut - frais_total, 2), i - idx_entree, i, "PERDU"
-            if row['low'] <= prix_objectif:
-                pnl_brut = (prix_entree - prix_objectif) / prix_entree * mise * LEVIER
-                return round(pnl_brut - frais_total, 2), i - idx_entree, i, "GAGNE"
-
-    # Timeout 6h → fermeture au prix de clôture
-    if idx_entree + max_bougies < len(df):
-        prix_sortie = df.iloc[idx_entree + max_bougies]['close']
-        if direction == "ACHAT":
-            pnl_brut = (prix_sortie - prix_entree) / prix_entree * mise * LEVIER
-        else:
-            pnl_brut = (prix_entree - prix_sortie) / prix_entree * mise * LEVIER
-        resultat = "GAGNE" if pnl_brut > 0 else "PERDU"
-        return round(pnl_brut - frais_total, 2), max_bougies, idx_entree + max_bougies, resultat
-
-    return 0, 0, idx_entree + 1, "NEUTRE"
-
-# ══════════════════════════════════════════════════════════════
-# BACKTEST PRINCIPAL
-# ══════════════════════════════════════════════════════════════
-
-def lancer_backtest(symbole, df, score_min=18):
-    """Lance le backtest complet sur un symbole."""
+def backtest_donchian(df, symbole):
     print(f"\n  {'='*50}")
-    print(f"  BACKTEST : {symbole} | Score min : {score_min}/30")
-    print(f"  Période  : {df.index[0].strftime('%Y-%m-%d')} → {df.index[-1].strftime('%Y-%m-%d')}")
-    print(f"  Bougies  : {len(df)} H1")
+    print(f"  BACKTEST DONCHIAN — {symbole}")
+    print(f"  Période : {df.index[0].strftime('%Y-%m-%d')} → {df.index[-1].strftime('%Y-%m-%d')}")
+    print(f"  Bougies : {len(df)} H1")
     print(f"  {'='*50}")
 
-    trades      = []
-    capital     = CAPITAL_INITIAL
-    i           = 30  # On commence après 30 bougies pour avoir les MA
+    trades  = []
+    capital = CAPITAL_INITIAL
+    i       = DONCHIAN_ENTREE + 5
+    frais   = (FRAIS_PCT + SLIPPAGE_PCT) * 2
 
-    while i < len(df) - 7:
-        row           = df.iloc[i]
-        score, direction = generer_signal(row)
+    while i < len(df) - 25:
+        row = df.iloc[i]
 
-        if score >= score_min and direction != "NEUTRE":
-            gain, duree, idx_sortie, resultat = simuler_trade_backtest(df, i, direction)
-
-            capital += gain
-            trades.append({
-                'date':      df.index[i].strftime('%Y-%m-%d %H:%M'),
-                'direction': direction,
-                'resultat':  resultat,
-                'gain':      gain,
-                'duree_h':   duree,
-                'capital':   round(capital, 2),
-                'score':     score,
-                'adx':       round(row['adx'], 1),
-                'rsi':       round(row['rsi'], 1)
-            })
-
-            # Skip les bougies du trade + 2h de pause
-            i = idx_sortie + 2
-        else:
+        # Filtres
+        if row['adx'] < ADX_SEUIL:
             i += 1
+            continue
+        if row['vol_ratio'] < VOLUME_MINI:
+            i += 1
+            continue
+
+        prix    = row['close']
+        atr     = row['atr']
+        signal  = None
+
+        # Signal Donchian entrée
+        if prix > row['don_haut_55']:
+            signal = "ACHAT"
+        elif prix < row['don_bas_55']:
+            signal = "VENTE"
+
+        if signal is None:
+            i += 1
+            continue
+
+        # Simulation du trade
+        prix_entree = prix
+        mise        = CAPITAL_INITIAL * MISE_PCT
+
+        if signal == "ACHAT":
+            stop_loss = prix_entree - (atr * ATR_MULTIPLIER)
+        else:
+            stop_loss = prix_entree + (atr * ATR_MULTIPLIER)
+
+        distance_stop = abs(prix_entree - stop_loss)
+        resultat      = "NEUTRE"
+        gain_brut     = 0
+        duree         = 0
+
+        # Simulation bougie par bougie (max 24h)
+        for j in range(i + 1, min(i + 25, len(df))):
+            row_j = df.iloc[j]
+            duree = j - i
+
+            if signal == "ACHAT":
+                if row_j['low'] <= stop_loss:
+                    gain_brut = (stop_loss - prix_entree) / prix_entree * mise * LEVIER
+                    resultat  = "PERDU"
+                    break
+                if row_j['close'] < row_j['don_bas_20']:
+                    gain_brut = (row_j['close'] - prix_entree) / prix_entree * mise * LEVIER
+                    resultat  = "GAGNE" if gain_brut > 0 else "PERDU"
+                    break
+            else:
+                if row_j['high'] >= stop_loss:
+                    gain_brut = (prix_entree - stop_loss) / prix_entree * mise * LEVIER
+                    resultat  = "PERDU"
+                    break
+                if row_j['close'] > row_j['don_haut_20']:
+                    gain_brut = (prix_entree - row_j['close']) / prix_entree * mise * LEVIER
+                    resultat  = "GAGNE" if gain_brut > 0 else "PERDU"
+                    break
+
+        if resultat == "NEUTRE":
+            row_fin   = df.iloc[min(i + 24, len(df)-1)]
+            prix_fin  = row_fin['close']
+            if signal == "ACHAT":
+                gain_brut = (prix_fin - prix_entree) / prix_entree * mise * LEVIER
+            else:
+                gain_brut = (prix_entree - prix_fin) / prix_entree * mise * LEVIER
+            resultat = "GAGNE" if gain_brut > 0 else "PERDU"
+            duree    = 24
+
+        gain_net = round(gain_brut - frais * mise * LEVIER, 2)
+        capital  = round(capital + gain_net, 2)
+
+        trades.append({
+            'date':      df.index[i].strftime('%Y-%m-%d %H:%M'),
+            'signal':    signal,
+            'resultat':  resultat,
+            'gain':      gain_net,
+            'duree_h':   duree,
+            'capital':   capital,
+            'adx':       round(row['adx'], 1),
+            'atr_pct':   round((atr / prix) * 100, 2),
+            'don_h55':   round(row['don_haut_55'], 4),
+            'don_b55':   round(row['don_bas_55'], 4),
+        })
+
+        # Skip le trade + 2h de pause
+        i = i + duree + 2
 
     return trades, capital
 
 # ══════════════════════════════════════════════════════════════
-# ANALYSE DES RÉSULTATS
+# AFFICHAGE DES RÉSULTATS
 # ══════════════════════════════════════════════════════════════
 
-def analyser_resultats(trades, capital_final, symbole, score_min):
+def afficher_resultats(trades, capital_final, symbole):
     if not trades:
-        print(f"\n  Aucun trade trouvé avec score >= {score_min}")
-        return
+        print(f"\n  Aucun trade Donchian trouvé sur {symbole}")
+        return None
 
-    df_trades  = pd.DataFrame(trades)
-    nb_trades  = len(trades)
-    nb_wins    = len(df_trades[df_trades['resultat'] == 'GAGNE'])
-    nb_losses  = len(df_trades[df_trades['resultat'] == 'PERDU'])
-    win_rate   = nb_wins / nb_trades * 100
-    gain_total = df_trades['gain'].sum()
-    avg_win    = df_trades[df_trades['resultat']=='GAGNE']['gain'].mean() if nb_wins > 0 else 0
-    avg_loss   = df_trades[df_trades['resultat']=='PERDU']['gain'].mean() if nb_losses > 0 else 0
-    perf_pct   = (capital_final - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100
+    df_t      = pd.DataFrame(trades)
+    nb        = len(trades)
+    wins      = len(df_t[df_t['resultat'] == 'GAGNE'])
+    losses    = len(df_t[df_t['resultat'] == 'PERDU'])
+    win_rate  = wins / nb * 100
+    gain_tot  = df_t['gain'].sum()
+    perf      = (capital_final - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100
+    avg_win   = df_t[df_t['resultat']=='GAGNE']['gain'].mean() if wins > 0 else 0
+    avg_loss  = df_t[df_t['resultat']=='PERDU']['gain'].mean() if losses > 0 else 0
 
-    # Drawdown max
-    capitals   = [CAPITAL_INITIAL] + [t['capital'] for t in trades]
-    peak       = CAPITAL_INITIAL
-    max_dd     = 0
+    # Drawdown
+    capitals  = [CAPITAL_INITIAL] + [t['capital'] for t in trades]
+    peak      = CAPITAL_INITIAL
+    max_dd    = 0
     for c in capitals:
-        if c > peak:
-            peak = c
+        if c > peak: peak = c
         dd = (c - peak) / peak * 100
-        if dd < max_dd:
-            max_dd = dd
+        if dd < max_dd: max_dd = dd
 
-    # Trades par semaine
-    jours      = (pd.to_datetime(trades[-1]['date']) - pd.to_datetime(trades[0]['date'])).days
-    semaines   = max(jours / 7, 1)
-    trades_sem = nb_trades / semaines
+    jours    = (pd.to_datetime(trades[-1]['date']) - pd.to_datetime(trades[0]['date'])).days
+    sem      = nb / max(jours / 7, 1)
 
     print(f"\n  {'='*55}")
-    print(f"  RÉSULTATS BACKTEST — {symbole}")
+    print(f"  RÉSULTATS DONCHIAN — {symbole}")
     print(f"  {'='*55}")
-    print(f"  Période analysée  : {jours} jours")
-    print(f"  Trades total      : {nb_trades}")
-    print(f"  Trades/semaine    : {round(trades_sem, 1)}")
-    print(f"  Victoires         : {nb_wins} ({round(win_rate, 1)}%)")
-    print(f"  Défaites          : {nb_losses}")
-    print(f"  Gain moyen win    : +{round(avg_win, 2)}EUR")
-    print(f"  Perte moyenne     : {round(avg_loss, 2)}EUR")
-    print(f"  Capital initial   : {CAPITAL_INITIAL}EUR")
-    print(f"  Capital final     : {round(capital_final, 2)}EUR")
-    print(f"  Performance       : {'+' if perf_pct >= 0 else ''}{round(perf_pct, 1)}%")
-    print(f"  Gain total net    : {'+' if gain_total >= 0 else ''}{round(gain_total, 2)}EUR")
-    print(f"  Drawdown max      : {round(max_dd, 1)}%")
+    print(f"  Période          : {jours} jours")
+    print(f"  Trades total     : {nb}")
+    print(f"  Trades/semaine   : {round(sem, 1)}")
+    print(f"  Victoires        : {wins} ({round(win_rate, 1)}%)")
+    print(f"  Défaites         : {losses}")
+    print(f"  Gain moyen win   : +{round(avg_win, 2)}EUR")
+    print(f"  Perte moyenne    : {round(avg_loss, 2)}EUR")
+    print(f"  Capital initial  : {CAPITAL_INITIAL}EUR")
+    print(f"  Capital final    : {round(capital_final, 2)}EUR")
+    print(f"  Performance      : {'+' if perf >= 0 else ''}{round(perf, 1)}%")
+    print(f"  Gain total net   : {'+' if gain_tot >= 0 else ''}{round(gain_tot, 2)}EUR")
+    print(f"  Drawdown max     : {round(max_dd, 1)}%")
     print(f"  {'='*55}")
 
-    # Afficher les 10 derniers trades
-    print(f"\n  Derniers trades :")
-    for t in trades[-10:]:
+    print(f"\n  Tous les trades :")
+    for t in trades:
         icone = "✅" if t['resultat'] == "GAGNE" else "❌"
-        print(f"    {icone} {t['date']} | {t['direction']} | "
+        print(f"    {icone} {t['date']} | {t['signal']} | "
               f"{'+' if t['gain'] >= 0 else ''}{t['gain']}EUR | "
-              f"Score {t['score']} | ADX {t['adx']} | RSI {t['rsi']} | "
+              f"ADX {t['adx']} | ATR {t['atr_pct']}% | "
               f"{t['duree_h']}h | Capital: {t['capital']}EUR")
 
     return {
-        'symbole': symbole,
-        'nb_trades': nb_trades,
-        'trades_semaine': round(trades_sem, 1),
+        'symbole': symbole, 'nb_trades': nb,
+        'trades_semaine': round(sem, 1),
         'win_rate': round(win_rate, 1),
-        'performance': round(perf_pct, 1),
-        'gain_total': round(gain_total, 2),
+        'performance': round(perf, 1),
+        'gain_total': round(gain_tot, 2),
         'drawdown_max': round(max_dd, 1)
     }
-
-# ══════════════════════════════════════════════════════════════
-# TEST AVEC DIFFÉRENTS SCORE_MIN
-# ══════════════════════════════════════════════════════════════
-
-def tester_score_min(df, symbole):
-    """Compare les résultats avec différents score min."""
-    print(f"\n  {'='*55}")
-    print(f"  COMPARAISON SCORE MIN — {symbole}")
-    print(f"  {'='*55}")
-    print(f"  {'Score':>6} | {'Trades':>6} | {'T/sem':>5} | {'WinRate':>7} | {'Perf%':>6} | {'MaxDD%':>6}")
-    print(f"  {'-'*55}")
-
-    for score in [15, 16, 17, 18, 20]:
-        trades, capital = lancer_backtest(symbole, df, score_min=score)
-        if trades:
-            df_t     = pd.DataFrame(trades)
-            nb       = len(trades)
-            wins     = len(df_t[df_t['resultat']=='GAGNE'])
-            wr       = wins / nb * 100
-            gain     = df_t['gain'].sum()
-            perf     = (capital - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100
-            jours    = (pd.to_datetime(trades[-1]['date']) - pd.to_datetime(trades[0]['date'])).days
-            sem      = nb / max(jours/7, 1)
-
-            capitals = [CAPITAL_INITIAL] + [t['capital'] for t in trades]
-            peak     = CAPITAL_INITIAL
-            max_dd   = 0
-            for c in capitals:
-                if c > peak: peak = c
-                dd = (c - peak) / peak * 100
-                if dd < max_dd: max_dd = dd
-
-            print(f"  {score:>6} | {nb:>6} | {round(sem,1):>5} | {round(wr,1):>6}% | "
-                  f"{'+' if perf>=0 else ''}{round(perf,1):>5}% | {round(max_dd,1):>5}%")
-        else:
-            print(f"  {score:>6} | {'0':>6} | {'0':>5} | {'N/A':>7} | {'N/A':>6} | {'N/A':>6}")
 
 # ══════════════════════════════════════════════════════════════
 # MAIN
@@ -387,47 +266,41 @@ def tester_score_min(df, symbole):
 
 def main():
     print("=" * 55)
-    print("  BACKTESTER BOT ULTIME V4.2")
-    print(f"  Frais : {FRAIS_PCT*100}% | Slippage : {SLIPPAGE_PCT*100}%")
-    print(f"  Capital : {CAPITAL_INITIAL}EUR | Levier : x{LEVIER}")
-    print(f"  Période : 6 mois de données H1")
+    print("  BACKTESTER DONCHIAN 55/20 — TURTLES")
+    print(f"  Entrée : breakout {DONCHIAN_ENTREE} bougies")
+    print(f"  Sortie : breakout inverse {DONCHIAN_SORTIE} bougies")
+    print(f"  Stop   : ATR × {ATR_MULTIPLIER}")
+    print(f"  Frais  : {FRAIS_PCT*100}% | Slippage : {SLIPPAGE_PCT*100}%")
     print("=" * 55)
 
     resultats = []
 
     for symbole in MARCHES:
-        # Télécharge 6 mois de données
-        df = get_historical_data(symbole, jours=180)
+        df = get_historical_data(symbole)
         if df is None or len(df) < 100:
-            print(f"  Impossible de récupérer les données {symbole}")
+            print(f"  Impossible de récupérer {symbole}")
             continue
 
-        # Ajoute les indicateurs
         df = ajouter_indicateurs(df)
-        print(f"  {len(df)} bougies valides après calcul des indicateurs")
+        print(f"  {len(df)} bougies valides")
 
-        # Backtest principal avec score 18
-        trades, capital = lancer_backtest(symbole, df, score_min=SCORE_MIN)
-        result = analyser_resultats(trades, capital, symbole, SCORE_MIN)
+        trades, capital = backtest_donchian(df, symbole)
+        result = afficher_resultats(trades, capital, symbole)
         if result:
             resultats.append(result)
 
-        # Comparaison des score min
-        tester_score_min(df, symbole)
-
         time.sleep(2)
 
-    # Synthèse finale
     if resultats:
         print(f"\n  {'='*55}")
-        print(f"  SYNTHÈSE GLOBALE")
+        print(f"  SYNTHÈSE GLOBALE DONCHIAN")
         print(f"  {'='*55}")
         for r in resultats:
             print(f"  {r['symbole']} : {r['nb_trades']} trades | "
+                  f"T/sem {r['trades_semaine']} | "
                   f"WR {r['win_rate']}% | "
                   f"Perf {'+' if r['performance']>=0 else ''}{r['performance']}% | "
                   f"MaxDD {r['drawdown_max']}%")
-        print(f"\n  Recommandation score min optimal : voir tableau comparatif ci-dessus")
         print(f"  {'='*55}")
 
 if __name__ == "__main__":
