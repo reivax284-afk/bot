@@ -1,8 +1,8 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║                BOT MEAN REVERSION V7.3 — OPTION C                         ║
+║                BOT MEAN REVERSION V7.3 — OPTION C           ║
 ║   RSI < 30 → ACHAT | RSI > 70 → VENTE                      ║
-║   8 marchés | H1 | Stop ATR×2.5 | Ratio 1:1.5              ║
+║   10 marchés | H1 | Stop ATR×2.5 | Ratio 1:2               ║
 ║   Sortie partielle 50% | Kelly 25% | PostgreSQL              ║
 ║   TRAILING STOP PROGRESSIF — V7.3                           ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -54,30 +54,28 @@ SEUIL_RUINE             = 0.30
 PAUSE_DUREE             = 86400
 
 # ══════════════════════════════════════════════════════════════
-# TRAILING STOP PROGRESSIF — NIVEAUX
+# TRAILING STOP PROGRESSIF
 # Plus le PnL est élevé, plus le stop se resserre
 # ══════════════════════════════════════════════════════════════
 
 TRAILING_NIVEAUX = [
-    # (seuil_pnl_eur, multiplicateur_atr, protection_min_eur)
-    (100, 0.05),   # PnL > +100€ → ATR × 0.05 → protège ~+97€
-    ( 75, 0.07),   # PnL > +75€  → ATR × 0.07 → protège ~+72€
-    ( 50, 0.10),   # PnL > +50€  → ATR × 0.10 → protège ~+47€
-    ( 35, 0.15),   # PnL > +35€  → ATR × 0.15 → protège ~+32€
-    ( 25, 0.20),   # PnL > +25€  → ATR × 0.20 → protège ~+22€
-    ( 18, 0.30),   # PnL > +18€  → ATR × 0.30 → protège ~+15€
-    ( 14, 0.50),   # PnL > +14€  → ATR × 0.50 → protège ~+11€
-    ( 10, 0.80),   # PnL > +10€  → ATR × 0.80 → protège ~+7€
-    (  5, 1.50),   # PnL > +5€   → ATR × 1.50 → protège ~+3€
-    (  0, 2.50),   # Par défaut  → ATR × 2.50 (comportement normal)
+    (100, 0.05),
+    ( 75, 0.07),
+    ( 50, 0.10),
+    ( 35, 0.15),
+    ( 25, 0.20),
+    ( 18, 0.30),
+    ( 14, 0.50),
+    ( 10, 0.80),
+    (  5, 1.50),
+    (  0, 2.50),
 ]
 
 def get_multiplicateur_atr(pnl):
-    """Retourne le multiplicateur ATR selon le PnL actuel."""
     for seuil, multiplicateur in TRAILING_NIVEAUX:
         if pnl >= seuil:
             return multiplicateur
-    return 2.50  # fallback
+    return 2.50
 
 MARCHES = [
     "BTCUSDT",
@@ -308,12 +306,12 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
     atr = details.get("atr", 0)
 
     if direction == "ACHAT":
-        stop_loss        = round(prix_entree - (atr * ATR_MULTIPLIER), 8)
+        stop_loss = round(prix_entree - (atr * ATR_MULTIPLIER), 8)
     else:
-        stop_loss        = round(prix_entree + (atr * ATR_MULTIPLIER), 8)
+        stop_loss = round(prix_entree + (atr * ATR_MULTIPLIER), 8)
 
-    distance_stop        = abs(prix_entree - stop_loss)
-    distance_stop_pct    = (distance_stop / prix_entree) * 100
+    distance_stop     = abs(prix_entree - stop_loss)
+    distance_stop_pct = (distance_stop / prix_entree) * 100
 
     if direction == "ACHAT":
         objectif_partiel = round(prix_entree + (distance_stop * RATIO_PARTIEL), 8)
@@ -339,14 +337,14 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
     log.info(f"  Mise             : {mise}EUR | Levier x{LEVIER}")
     log.info(f"  Trailing stop    : PROGRESSIF ({len(TRAILING_NIVEAUX)-1} niveaux)\n")
 
-    debut              = time.time()
-    stop_actuel        = stop_loss
-    meilleur_prix      = prix_entree
-    dernier_log        = 0
-    prix_sortie        = prix_entree
-    partiel_execute    = False
-    gain_partiel       = 0
-    niveau_actuel      = 0  # Pour logger les changements de niveau
+    debut           = time.time()
+    stop_actuel     = stop_loss
+    meilleur_prix   = prix_entree
+    dernier_log     = 0
+    prix_sortie     = prix_entree
+    partiel_execute = False
+    gain_partiel    = 0
+    niveau_actuel   = 0
 
     while True:
         time.sleep(CHECK_INTERVAL)
@@ -357,49 +355,38 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
 
         prix_sortie = prix_actuel
 
-        # ── Calcul PnL ──
         if direction == "ACHAT":
             pnl = round((prix_actuel - prix_entree) / prix_entree * mise * LEVIER, 2)
         else:
             pnl = round((prix_entree - prix_actuel) / prix_entree * mise * LEVIER, 2)
 
-        # ── Trailing Stop Progressif ──
-        # On choisit le multiplicateur ATR selon le PnL actuel
-        multiplicateur = get_multiplicateur_atr(pnl)
+        # Trailing stop progressif
+        multiplicateur    = get_multiplicateur_atr(pnl)
         distance_trailing = atr * multiplicateur
 
         if direction == "ACHAT":
             if prix_actuel > meilleur_prix:
                 meilleur_prix = prix_actuel
-
             nouveau_stop = round(meilleur_prix - distance_trailing, 8)
-
-            # Le stop ne peut que monter (jamais redescendre)
             if nouveau_stop > stop_actuel:
                 if multiplicateur != niveau_actuel:
                     log.info(f"  [TRAILING] PnL {'+' if pnl>=0 else ''}{pnl}€ → "
-                             f"ATR×{multiplicateur} | Nouveau stop : {nouveau_stop}")
+                             f"ATR×{multiplicateur} | Stop : {nouveau_stop}")
                     niveau_actuel = multiplicateur
                 stop_actuel = nouveau_stop
-
             atteint_partiel = not partiel_execute and prix_actuel >= objectif_partiel
             atteint_final   = prix_actuel >= objectif_final
             atteint_stop    = prix_actuel <= stop_actuel
-
-        else:  # VENTE
+        else:
             if prix_actuel < meilleur_prix:
                 meilleur_prix = prix_actuel
-
             nouveau_stop = round(meilleur_prix + distance_trailing, 8)
-
-            # Le stop ne peut que descendre (jamais remonter)
             if nouveau_stop < stop_actuel:
                 if multiplicateur != niveau_actuel:
                     log.info(f"  [TRAILING] PnL {'+' if pnl>=0 else ''}{pnl}€ → "
-                             f"ATR×{multiplicateur} | Nouveau stop : {nouveau_stop}")
+                             f"ATR×{multiplicateur} | Stop : {nouveau_stop}")
                     niveau_actuel = multiplicateur
                 stop_actuel = nouveau_stop
-
             atteint_partiel = not partiel_execute and prix_actuel <= objectif_partiel
             atteint_final   = prix_actuel <= objectif_final
             atteint_stop    = prix_actuel >= stop_actuel
@@ -410,7 +397,7 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
             log.info(f"  [{datetime.now().strftime('%H:%M:%S')}] {symbole}: {prix_actuel} | "
                      f"PnL: {'+' if pnl >= 0 else ''}{pnl}EUR | "
                      f"Stop: {stop_actuel} (ATR×{multiplicateur}) | {duree}min"
-                     f"{' | PARTIEL OK ✅' if partiel_execute else ''}")
+                     f"{' | PARTIEL OK' if partiel_execute else ''}")
             dernier_log = time.time()
 
         trade_info = {
@@ -421,22 +408,18 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
             "duree_minutes": duree
         }
 
-        # Sortie partielle
         if atteint_partiel:
             gain_partiel    = round(pnl * 0.5, 2)
             partiel_execute = True
-            log.info(f"  SORTIE PARTIELLE 50% ! +{gain_partiel}EUR ✅")
-            log.info(f"  Stop maintenu progressif (PnL protégé automatiquement)")
+            log.info(f"  SORTIE PARTIELLE 50% ! +{gain_partiel}EUR")
             continue
 
-        # Objectif final
         if atteint_final:
             gain_final = round(pnl * 0.5, 2) if partiel_execute else pnl
             gain_total = round(gain_partiel + gain_final, 2)
-            log.info(f"\n  OBJECTIF FINAL ! Total: +{gain_total}EUR 🎉")
+            log.info(f"\n  OBJECTIF FINAL ! Total: +{gain_total}EUR")
             return "GAGNE", gain_total, mise, trade_info
 
-        # Stop
         if atteint_stop:
             if partiel_execute:
                 gain_reste = round(pnl * 0.5, 2)
@@ -448,7 +431,6 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
                 log.info(f"\n  STOP-LOSS ! {pnl}EUR")
                 return "PERDU", pnl, mise, trade_info
 
-        # Timeout
         if time.time() - debut >= TIMEOUT_TRADE:
             if partiel_execute:
                 gain_reste = round(pnl * 0.5, 2)
