@@ -447,23 +447,7 @@ def demarrer_bot():
     init_database()
     etat = charger_etat()
 
-    # Réinitialisation complète — nouveau départ propre
-    log.info(f"Réinitialisation complète → Capital {CAPITAL_INITIAL}EUR | Trade #1")
-    etat["capital"]             = CAPITAL_INITIAL
-    etat["cumul_net"]           = 0.0
-    etat["total_gagne"]         = 0.0
-    etat["total_perdu"]         = 0.0
-    etat["nb_trades"]           = 0
-    etat["nb_wins"]             = 0
-    etat["nb_losses"]           = 0
-    etat["nb_skips"]            = 0
-    etat["pertes_consecutives"] = 0
-    etat["avg_win_pct"]         = 0.0
-    etat["avg_loss_pct"]        = 0.0
-    etat["pause_until"]         = 0
-    etat["historique"]          = []
-    sauvegarder_etat(etat)
-    log.info(f"Nouveau départ ✅ — Capital {CAPITAL_INITIAL}EUR")
+    # Données chargées depuis PostgreSQL — pas de reset
 
     afficher_tableau_de_bord(etat)
 
