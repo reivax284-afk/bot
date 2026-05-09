@@ -20,6 +20,27 @@ from ta.momentum import RSIIndicator
 from datetime import datetime
 from database import init_database, charger_etat, sauvegarder_etat, enregistrer_trade
 
+# ══════════════════════════════════════════════════════════════
+# TELEGRAM
+# ══════════════════════════════════════════════════════════════
+
+TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
+
+def telegram(message):
+    """Envoie une notification Telegram."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, data={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
+        }, timeout=10)
+    except Exception as e:
+        log.error(f"Erreur Telegram : {e}")
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -290,6 +311,13 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
     log.info(f"  Objectif final   : {objectif_final} (50% à 1:{RATIO_RR})")
     log.info(f"  Mise             : {mise}EUR | Levier x{LEVIER}")
     log.info(f"  Trailing stop    : PROGRESSIF ({len(TRAILING_NIVEAUX)-1} niveaux)\n")
+    telegram(f"📊 <b>TRADE #{numero_trade} OUVERT</b>\n"
+             f"{'🟢 ACHAT' if direction == 'ACHAT' else '🔴 VENTE'} {symbole}\n"
+             f"RSI : {details.get('rsi', 0)}\n"
+             f"Prix entrée : {prix_entree}\n"
+             f"Stop : {stop_loss} ({round(distance_stop_pct,2)}%)\n"
+             f"Objectif : {objectif_final}\n"
+             f"Mise : {mise}€ × x{LEVIER}")
 
     debut           = time.time()
     stop_actuel     = stop_loss
@@ -371,6 +399,10 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
             gain_final = round(pnl * 0.5, 2) if partiel_execute else pnl
             gain_total = round(gain_partiel + gain_final, 2)
             log.info(f"\n  OBJECTIF FINAL ! Total: +{gain_total}EUR 🎉")
+            telegram(f"🎯 <b>OBJECTIF ATTEINT !</b>\n"
+                     f"{symbole} {direction}\n"
+                     f"Gain : <b>+{gain_total}€</b>\n"
+                     f"Durée : {duree} min")
             return "GAGNE", gain_total, mise, trade_info
 
         if atteint_stop:
@@ -382,6 +414,10 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
                 return resultat, gain_total, mise, trade_info
             else:
                 log.info(f"\n  STOP-LOSS ! {pnl}EUR")
+                telegram(f"🛑 <b>STOP-LOSS</b>\n"
+                         f"{symbole} {direction}\n"
+                         f"Perte : <b>{pnl}€</b>\n"
+                         f"Durée : {duree} min")
                 return "PERDU", pnl, mise, trade_info
 
         if time.time() - debut >= TIMEOUT_TRADE:
@@ -441,8 +477,23 @@ def afficher_tableau_de_bord(etat):
                      f"Capital: {h['capital']}EUR")
     log.info(f"  {'='*55}")
 
+def envoyer_rapport_telegram(etat):
+    """Envoie un rapport complet sur Telegram."""
+    win_rate = (etat["nb_wins"] / etat["nb_trades"] * 100) if etat["nb_trades"] > 0 else 0
+    perf     = ((etat["capital"] - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100)
+    telegram(f"📈 <b>RAPPORT BOT V7.3</b>\n"
+             f"Capital : <b>{round(etat['capital'],2)}€</b> ({'+' if perf>=0 else ''}{round(perf,2)}%)\n"
+             f"Trades : {etat['nb_trades']} | Win Rate : {round(win_rate,1)}%\n"
+             f"Gagné : +{round(etat['total_gagne'],2)}€\n"
+             f"Perdu : -{round(etat['total_perdu'],2)}€\n"
+             f"<b>NET : {'+' if etat['cumul_net']>=0 else ''}{round(etat['cumul_net'],2)}€</b>")
+
 def demarrer_bot():
     log.info(f"DEMARRAGE BOT MEAN REVERSION V7.3 — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    telegram(f"🚀 <b>BOT MEAN REVERSION V7.3 DÉMARRÉ</b>\n"
+             f"Capital : {CAPITAL_INITIAL}€ | Levier x{LEVIER}\n"
+             f"Marchés : {len(MARCHES)} cryptos\n"
+             f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     init_database()
     etat = charger_etat()
@@ -536,6 +587,7 @@ def demarrer_bot():
             })
 
             afficher_tableau_de_bord(etat)
+            envoyer_rapport_telegram(etat)
             log.info(f"  Pause 2 minutes avant prochain trade...")
             time.sleep(PAUSE)
 
