@@ -348,6 +348,12 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
 
         prix_sortie = prix_actuel
 
+        # ── CALCUL PNL PRÉLIMINAIRE ──
+        if direction == "ACHAT":
+            pnl = round((prix_actuel - prix_entree) / prix_entree * mise * LEVIER, 2)
+        else:
+            pnl = round((prix_entree - prix_actuel) / prix_entree * mise * LEVIER, 2)
+
         # ── TRAILING STOP PROGRESSIF ──
         # Plus le gain est élevé, plus le stop se resserre
         if pnl >= 100:                        # +100€ → ATR × 0.05 → protège +97€
@@ -378,7 +384,6 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
                 nouveau_stop  = round(meilleur_prix - distance_stop_progressive, 8)
                 if nouveau_stop > stop_actuel:
                     stop_actuel = nouveau_stop
-            pnl              = round((prix_actuel - prix_entree) / prix_entree * mise * LEVIER, 2)
             atteint_partiel  = not partiel_execute and prix_actuel >= objectif_partiel
             atteint_final    = prix_actuel >= objectif_final
             atteint_stop     = prix_actuel <= stop_actuel
@@ -388,7 +393,6 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
                 nouveau_stop  = round(meilleur_prix + distance_stop_progressive, 8)
                 if nouveau_stop < stop_actuel:
                     stop_actuel = nouveau_stop
-            pnl              = round((prix_entree - prix_actuel) / prix_entree * mise * LEVIER, 2)
             atteint_partiel  = not partiel_execute and prix_actuel <= objectif_partiel
             atteint_final    = prix_actuel <= objectif_final
             atteint_stop     = prix_actuel >= stop_actuel
