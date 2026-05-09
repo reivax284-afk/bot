@@ -26,7 +26,7 @@ ADX_MIN         = 10        # ADX minimum — évite les marchés morts
 VOLUME_MINI     = 0.40
 FRAIS_PCT       = 0.0004
 SLIPPAGE_PCT    = 0.0002
-TIMEOUT_BOUGIES = 4    # 4h au lieu de 12h
+TIMEOUT_BOUGIES = 6    # 6h
 
 # 3 options à comparer
 OPTIONS = [
