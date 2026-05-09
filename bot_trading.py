@@ -1,15 +1,13 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║                BOT MEAN REVERSION V7.3 — OPTION C                         ║
+║           BOT MEAN REVERSION V7.3 — OPTION C                ║
 ║   RSI < 30 → ACHAT | RSI > 70 → VENTE                      ║
-║   8 marchés | H1 | Stop ATR×2.5 | Ratio 1:1.5              ║
-║   Sortie partielle 50% | Kelly 25% | PostgreSQL              ║
-║   TRAILING STOP PROGRESSIF — V7.3                           ║
+║   10 marchés | H1 | Stop ATR×2.5 | Ratio 1:2               ║
+║   Trailing Stop Progressif | Telegram | PostgreSQL           ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
 import requests
-import json
 import time
 import os
 import logging
@@ -20,33 +18,16 @@ from ta.momentum import RSIIndicator
 from datetime import datetime
 from database import init_database, charger_etat, sauvegarder_etat, enregistrer_trade
 
-# ══════════════════════════════════════════════════════════════
-# TELEGRAM
-# ══════════════════════════════════════════════════════════════
-
-TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
-
-def telegram(message):
-    """Envoie une notification Telegram."""
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML"
-        }, timeout=10)
-    except Exception as e:
-        log.error(f"Erreur Telegram : {e}")
-
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler()]
 )
 log = logging.getLogger(__name__)
+
+# ══════════════════════════════════════════════════════════════
+# CONFIGURATION
+# ══════════════════════════════════════════════════════════════
 
 CAPITAL_INITIAL         = 215.0
 LEVIER                  = 10
@@ -60,16 +41,19 @@ RATIO_PARTIEL           = 1.0
 PAUSE                   = 120
 CHECK_INTERVAL          = 10
 TIMEOUT_TRADE           = 12 * 3600
-
 RSI_ACHAT               = 30
 RSI_VENTE               = 70
 VOLUME_MINI             = 0.40
 ADX_MAX                 = 40
-
 MAX_PERTES_CONSECUTIVES = 2
 SEUIL_RUINE             = 0.30
 PAUSE_DUREE             = 86400
 
+# Telegram
+TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
+
+# Trailing Stop Progressif
 TRAILING_NIVEAUX = [
     (100, 0.05),
     ( 75, 0.07),
@@ -84,30 +68,60 @@ TRAILING_NIVEAUX = [
 ]
 
 def get_multiplicateur_atr(pnl):
-    for seuil, multiplicateur in TRAILING_NIVEAUX:
+    for seuil, mult in TRAILING_NIVEAUX:
         if pnl >= seuil:
-            return multiplicateur
+            return mult
     return 2.50
 
+# 10 marchés validés par backtest
 MARCHES = [
     "BTCUSDT", "ETHUSDT", "XRPUSDT", "ATOMUSDT", "LINKUSDT",
     "ADAUSDT", "SOLUSDT", "AVAXUSDT", "NEARUSDT", "DOTUSDT"
 ]
 
 KRAKEN_SYMBOLS = {
-    "BTCUSDT":  "XXBTZUSD", "ETHUSDT":  "XETHZUSD",
-    "XRPUSDT":  "XXRPZUSD", "ATOMUSDT": "ATOMUSD",
-    "LINKUSDT": "LINKUSD",  "ADAUSDT":  "ADAUSD",
-    "SOLUSDT":  "SOLUSD",   "AVAXUSDT": "AVAXUSD",
-    "NEARUSDT": "NEARUSD",  "DOTUSDT":  "DOTUSD"
+    "BTCUSDT":  "XXBTZUSD",
+    "ETHUSDT":  "XETHZUSD",
+    "XRPUSDT":  "XXRPZUSD",
+    "ATOMUSDT": "ATOMUSD",
+    "LINKUSDT": "LINKUSD",
+    "ADAUSDT":  "ADAUSD",
+    "SOLUSDT":  "SOLUSD",
+    "AVAXUSDT": "AVAXUSD",
+    "NEARUSDT": "NEARUSD",
+    "DOTUSDT":  "DOTUSD"
 }
 
 log.info("=" * 55)
-log.info("  BOT MEAN REVERSION V7.3 — TRAILING STOP PROGRESSIF")
+log.info("  BOT MEAN REVERSION V7.3 — OPTION C")
+log.info(f"  Capital : {CAPITAL_INITIAL}EUR | Levier x{LEVIER} | Mise {MISE_FIXE_PCT*100}%")
 log.info(f"  RSI < {RSI_ACHAT} → ACHAT | RSI > {RSI_VENTE} → VENTE")
-log.info(f"  ADX max : {ADX_MAX}")
-log.info(f"  {len(TRAILING_NIVEAUX)-1} niveaux de trailing stop progressif")
+log.info(f"  Stop ATR×{ATR_MULTIPLIER} | Ratio 1:{RATIO_RR}")
+log.info(f"  Trailing Stop : {len(TRAILING_NIVEAUX)-1} niveaux progressifs")
+log.info(f"  Marchés : {len(MARCHES)} cryptos")
+log.info(f"  Telegram : {'✅ ON' if TELEGRAM_TOKEN else '❌ OFF'}")
 log.info("=" * 55)
+
+# ══════════════════════════════════════════════════════════════
+# TELEGRAM
+# ══════════════════════════════════════════════════════════════
+
+def telegram(message):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, data={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
+        }, timeout=10)
+    except Exception as e:
+        log.error(f"Erreur Telegram : {e}")
+
+# ══════════════════════════════════════════════════════════════
+# DONNÉES
+# ══════════════════════════════════════════════════════════════
 
 def get_prix_actuel(symbole):
     kraken_symbol = KRAKEN_SYMBOLS.get(symbole, symbole)
@@ -118,6 +132,8 @@ def get_prix_actuel(symbole):
         if data.get("error") and data["error"]:
             return None
         result = data.get("result", {})
+        if not result:
+            return None
         key = list(result.keys())[0]
         return float(result[key]["c"][0])
     except Exception as e:
@@ -147,6 +163,10 @@ def get_klines(symbole, limite=100):
     except Exception as e:
         log.error(f"Erreur klines {symbole} : {e}")
         return None
+
+# ══════════════════════════════════════════════════════════════
+# INDICATEURS
+# ══════════════════════════════════════════════════════════════
 
 def calculer_adx(df, periode=14):
     try:
@@ -181,6 +201,10 @@ def verifier_volume(df):
     ratio = volume_recent / moyenne_24h if moyenne_24h > 0 else 0
     return ratio >= VOLUME_MINI, round(ratio * 100, 1)
 
+# ══════════════════════════════════════════════════════════════
+# ANALYSE MEAN REVERSION
+# ══════════════════════════════════════════════════════════════
+
 def analyser_marche(symbole):
     df = get_klines(symbole, limite=100)
     if df is None or len(df) < 30:
@@ -200,7 +224,7 @@ def analyser_marche(symbole):
     atr_pct = (atr / prix) * 100
 
     if adx > ADX_MAX:
-        log.info(f"  {symbole} : ADX {adx} > {ADX_MAX} → tendance trop forte → skip")
+        log.info(f"  {symbole} : ADX {adx} > {ADX_MAX} → tendance forte → skip")
         return "NEUTRE", {}
 
     details = {
@@ -232,15 +256,13 @@ def choisir_meilleur_marche():
         time.sleep(0.5)
 
     if not signaux:
-        log.info("  => Aucun signal RSI extrême. On attend...")
+        log.info("  => Aucun signal. On attend...")
         return None, "NEUTRE", {}
 
-    def score_signal(item):
-        rsi     = item[1]["details"].get("rsi", 50)
-        atr_pct = item[1]["details"].get("atr_pct", 0)
-        return (abs(rsi - 50), atr_pct)
+    meilleur = max(signaux.items(),
+                   key=lambda x: (abs(x[1]["details"].get("rsi", 50) - 50),
+                                  x[1]["details"].get("atr_pct", 0)))[0]
 
-    meilleur  = max(signaux.items(), key=score_signal)[0]
     direction = signaux[meilleur]["direction"]
     rsi       = signaux[meilleur]["details"].get("rsi", 50)
     adx       = signaux[meilleur]["details"].get("adx", 0)
@@ -251,9 +273,13 @@ def choisir_meilleur_marche():
 
     autres = [m for m in signaux if m != meilleur]
     if autres:
-        log.info(f"     Autres signaux ignorés : {', '.join(autres)}")
+        log.info(f"     Autres signaux : {', '.join(autres)}")
 
     return meilleur, direction, signaux[meilleur]["details"]
+
+# ══════════════════════════════════════════════════════════════
+# KELLY
+# ══════════════════════════════════════════════════════════════
 
 def calculer_mise(capital, nb_trades, win_rate, avg_win_pct, avg_loss_pct):
     if nb_trades < MIN_TRADES_KELLY:
@@ -273,6 +299,10 @@ def calculer_mise(capital, nb_trades, win_rate, avg_win_pct, avg_loss_pct):
     mise = min(mise, capital * 0.30)
     return round(mise, 2)
 
+# ══════════════════════════════════════════════════════════════
+# SIMULATION DU TRADE
+# ══════════════════════════════════════════════════════════════
+
 def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
     prix_entree = get_prix_actuel(symbole)
     if prix_entree is None:
@@ -282,18 +312,15 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
 
     if direction == "ACHAT":
         stop_loss        = round(prix_entree - (atr * ATR_MULTIPLIER), 8)
+        objectif_partiel = round(prix_entree + (atr * ATR_MULTIPLIER * RATIO_PARTIEL), 8)
+        objectif_final   = round(prix_entree + (atr * ATR_MULTIPLIER * RATIO_RR), 8)
     else:
         stop_loss        = round(prix_entree + (atr * ATR_MULTIPLIER), 8)
+        objectif_partiel = round(prix_entree - (atr * ATR_MULTIPLIER * RATIO_PARTIEL), 8)
+        objectif_final   = round(prix_entree - (atr * ATR_MULTIPLIER * RATIO_RR), 8)
 
-    distance_stop        = abs(prix_entree - stop_loss)
-    distance_stop_pct    = (distance_stop / prix_entree) * 100
-
-    if direction == "ACHAT":
-        objectif_partiel = round(prix_entree + (distance_stop * RATIO_PARTIEL), 8)
-        objectif_final   = round(prix_entree + (distance_stop * RATIO_RR), 8)
-    else:
-        objectif_partiel = round(prix_entree - (distance_stop * RATIO_PARTIEL), 8)
-        objectif_final   = round(prix_entree - (distance_stop * RATIO_RR), 8)
+    distance_stop     = abs(prix_entree - stop_loss)
+    distance_stop_pct = (distance_stop / prix_entree) * 100
 
     win_rate = etat["nb_wins"] / etat["nb_trades"] if etat["nb_trades"] > 0 else 0.50
     avg_win  = etat["avg_win_pct"] if etat["avg_win_pct"] > 0 else distance_stop_pct * RATIO_RR
@@ -307,14 +334,15 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
     log.info(f"  RSI              : {details.get('rsi', 0)}")
     log.info(f"  Prix entree      : {prix_entree}")
     log.info(f"  Stop ATR×{ATR_MULTIPLIER}     : {stop_loss} ({round(distance_stop_pct,2)}%)")
-    log.info(f"  Objectif partiel : {objectif_partiel} (50% à 1:{RATIO_PARTIEL})")
-    log.info(f"  Objectif final   : {objectif_final} (50% à 1:{RATIO_RR})")
+    log.info(f"  Objectif partiel : {objectif_partiel} (1:{RATIO_PARTIEL})")
+    log.info(f"  Objectif final   : {objectif_final} (1:{RATIO_RR})")
     log.info(f"  Mise             : {mise}EUR | Levier x{LEVIER}")
-    log.info(f"  Trailing stop    : PROGRESSIF ({len(TRAILING_NIVEAUX)-1} niveaux)\n")
+    log.info(f"  Trailing stop    : PROGRESSIF (9 niveaux)\n")
+
     telegram(f"📊 <b>TRADE #{numero_trade} OUVERT</b>\n"
              f"{'🟢 ACHAT' if direction == 'ACHAT' else '🔴 VENTE'} {symbole}\n"
              f"RSI : {details.get('rsi', 0)}\n"
-             f"Prix entrée : {prix_entree}\n"
+             f"Prix : {prix_entree}\n"
              f"Stop : {stop_loss} ({round(distance_stop_pct,2)}%)\n"
              f"Objectif : {objectif_final}\n"
              f"Mise : {mise}€ × x{LEVIER}")
@@ -326,7 +354,7 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
     prix_sortie     = prix_entree
     partiel_execute = False
     gain_partiel    = 0
-    niveau_actuel   = 0
+    niveau_actuel   = 2.50
 
     while True:
         time.sleep(CHECK_INTERVAL)
@@ -337,11 +365,13 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
 
         prix_sortie = prix_actuel
 
+        # Calcul PnL
         if direction == "ACHAT":
             pnl = round((prix_actuel - prix_entree) / prix_entree * mise * LEVIER, 2)
         else:
             pnl = round((prix_entree - prix_actuel) / prix_entree * mise * LEVIER, 2)
 
+        # Trailing Stop Progressif
         multiplicateur    = get_multiplicateur_atr(pnl)
         distance_trailing = atr * multiplicateur
 
@@ -378,7 +408,7 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
             log.info(f"  [{datetime.now().strftime('%H:%M:%S')}] {symbole}: {prix_actuel} | "
                      f"PnL: {'+' if pnl >= 0 else ''}{pnl}EUR | "
                      f"Stop: {stop_actuel} (ATR×{multiplicateur}) | {duree}min"
-                     f"{' | PARTIEL OK ✅' if partiel_execute else ''}")
+                     f"{' | PARTIEL ✅' if partiel_execute else ''}")
             dernier_log = time.time()
 
         trade_info = {
@@ -389,12 +419,16 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
             "duree_minutes": duree
         }
 
+        # Sortie partielle
         if atteint_partiel:
             gain_partiel    = round(pnl * 0.5, 2)
             partiel_execute = True
             log.info(f"  SORTIE PARTIELLE 50% ! +{gain_partiel}EUR ✅")
+            telegram(f"⚡ <b>SORTIE PARTIELLE</b>\n"
+                     f"{symbole} | +{gain_partiel}€ sécurisés")
             continue
 
+        # Objectif final
         if atteint_final:
             gain_final = round(pnl * 0.5, 2) if partiel_execute else pnl
             gain_total = round(gain_partiel + gain_final, 2)
@@ -405,12 +439,16 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
                      f"Durée : {duree} min")
             return "GAGNE", gain_total, mise, trade_info
 
+        # Stop
         if atteint_stop:
             if partiel_execute:
                 gain_reste = round(pnl * 0.5, 2)
                 gain_total = round(gain_partiel + gain_reste, 2)
                 resultat   = "GAGNE" if gain_total > 0 else "PERDU"
                 log.info(f"\n  STOP (après partiel) — Total: {'+' if gain_total>=0 else ''}{gain_total}EUR")
+                telegram(f"🛑 <b>STOP (après partiel)</b>\n"
+                         f"{symbole} | {'+' if gain_total>=0 else ''}{gain_total}€\n"
+                         f"Durée : {duree} min")
                 return resultat, gain_total, mise, trade_info
             else:
                 log.info(f"\n  STOP-LOSS ! {pnl}EUR")
@@ -420,6 +458,7 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
                          f"Durée : {duree} min")
                 return "PERDU", pnl, mise, trade_info
 
+        # Timeout
         if time.time() - debut >= TIMEOUT_TRADE:
             if partiel_execute:
                 gain_reste = round(pnl * 0.5, 2)
@@ -428,11 +467,19 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
                 gain_total = pnl
             resultat = "GAGNE" if gain_total > 0 else "PERDU"
             log.info(f"\n  TIMEOUT — Fermeture : {'+' if gain_total>=0 else ''}{gain_total}EUR")
+            telegram(f"⏱ <b>TIMEOUT</b>\n"
+                     f"{symbole} | {'+' if gain_total>=0 else ''}{gain_total}€\n"
+                     f"Durée : {duree} min")
             return resultat, gain_total, mise, trade_info
+
+# ══════════════════════════════════════════════════════════════
+# KILL SWITCH
+# ══════════════════════════════════════════════════════════════
 
 def verifier_kill_switch(etat, capital):
     if capital < CAPITAL_INITIAL * SEUIL_RUINE:
         log.critical(f"SEUIL DE RUINE ! Capital {capital}EUR")
+        telegram(f"🚨 <b>SEUIL DE RUINE !</b>\nCapital : {capital}€\nBot arrêté !")
         return "RUINE"
 
     pause_until = etat.get("pause_until", 0)
@@ -444,12 +491,17 @@ def verifier_kill_switch(etat, capital):
 
     if etat["pertes_consecutives"] >= MAX_PERTES_CONSECUTIVES:
         log.warning(f"KILL SWITCH — {MAX_PERTES_CONSECUTIVES} pertes consecutives !")
+        telegram(f"⚠️ <b>KILL SWITCH</b>\n{MAX_PERTES_CONSECUTIVES} pertes consécutives\nPause 24h")
         etat["pause_until"]         = int(time.time()) + PAUSE_DUREE
         etat["pertes_consecutives"] = 0
         sauvegarder_etat(etat)
         return "PAUSE"
 
     return "OK"
+
+# ══════════════════════════════════════════════════════════════
+# TABLEAU DE BORD
+# ══════════════════════════════════════════════════════════════
 
 def afficher_tableau_de_bord(etat):
     win_rate = (etat["nb_wins"] / etat["nb_trades"] * 100) if etat["nb_trades"] > 0 else 0
@@ -478,29 +530,30 @@ def afficher_tableau_de_bord(etat):
     log.info(f"  {'='*55}")
 
 def envoyer_rapport_telegram(etat):
-    """Envoie un rapport complet sur Telegram."""
     win_rate = (etat["nb_wins"] / etat["nb_trades"] * 100) if etat["nb_trades"] > 0 else 0
     perf     = ((etat["capital"] - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100)
     telegram(f"📈 <b>RAPPORT BOT V7.3</b>\n"
              f"Capital : <b>{round(etat['capital'],2)}€</b> ({'+' if perf>=0 else ''}{round(perf,2)}%)\n"
-             f"Trades : {etat['nb_trades']} | Win Rate : {round(win_rate,1)}%\n"
+             f"Trades : {etat['nb_trades']} | WR : {round(win_rate,1)}%\n"
              f"Gagné : +{round(etat['total_gagne'],2)}€\n"
              f"Perdu : -{round(etat['total_perdu'],2)}€\n"
              f"<b>NET : {'+' if etat['cumul_net']>=0 else ''}{round(etat['cumul_net'],2)}€</b>")
 
+# ══════════════════════════════════════════════════════════════
+# BOUCLE PRINCIPALE
+# ══════════════════════════════════════════════════════════════
+
 def demarrer_bot():
     log.info(f"DEMARRAGE BOT MEAN REVERSION V7.3 — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    telegram(f"🚀 <b>BOT MEAN REVERSION V7.3 DÉMARRÉ</b>\n"
-             f"Capital : {CAPITAL_INITIAL}€ | Levier x{LEVIER}\n"
-             f"Marchés : {len(MARCHES)} cryptos\n"
-             f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     init_database()
     etat = charger_etat()
-
-    # Données chargées depuis PostgreSQL — pas de reset
-
     afficher_tableau_de_bord(etat)
+
+    telegram(f"🚀 <b>BOT MEAN REVERSION V7.3 DÉMARRÉ</b>\n"
+             f"Capital : {round(etat['capital'],2)}€\n"
+             f"Trades : {etat['nb_trades']} | WR : N/A\n"
+             f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     while True:
         try:
