@@ -43,7 +43,7 @@ VOLUME_MINI             = 0.40
 ADX_MAX                 = 40
 MAX_PERTES_CONSECUTIVES = 2
 SEUIL_RUINE             = 0.30
-PAUSE_DUREE             = 86400
+PAUSE_DUREE             = 43200      # 12h au lieu de 24h
 
 TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
