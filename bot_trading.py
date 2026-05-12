@@ -4,6 +4,8 @@
 ║   RSI < 30 → ACHAT | RSI > 70 → VENTE                      ║
 ║   8 marchés | H1 | Stop ATR×2.5 | Ratio 1:2               ║
 ║   Trailing Stop Progressif | Telegram | PostgreSQL           ║
+║   KILL SWITCH: pause 12h après 2 pertes consécutives        ║
+║   Réinitialisation du compteur après pause                  ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -43,25 +45,24 @@ VOLUME_MINI             = 0.40
 ADX_MAX                 = 40
 MAX_PERTES_CONSECUTIVES = 2
 SEUIL_RUINE             = 0.30
-PAUSE_DUREE             = 43200      # 12h
+PAUSE_DUREE             = 43200      # 12 heures
 
 TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
-# ========== NOUVEAUX Paliers de Trailing Stop (selon tableau utilisateur) ==========
+# ========== Paliers de Trailing Stop (selon tableau utilisateur) ==========
 TRAILING_NIVEAUX = [
     (100, 0.05),
     ( 75, 0.07),
     ( 50, 0.10),
     ( 35, 0.15),
     ( 25, 0.20),
-    ( 11, 0.30),   # au lieu de 18
-    (  8, 0.50),   # au lieu de 12
-    (  4, 0.80),   # au lieu de 10
-    (  1, 1.50),   # au lieu de 5
+    ( 11, 0.30),
+    (  8, 0.50),
+    (  4, 0.80),
+    (  1, 1.50),
     (  0, 2.50),
 ]
-# ==================================================================================
 
 def get_multiplicateur_atr(pnl):
     for seuil, mult in TRAILING_NIVEAUX:
@@ -95,6 +96,7 @@ log.info(f"  Stop ATR×{ATR_MULTIPLIER} | Ratio 1:{RATIO_RR}")
 log.info(f"  Trailing Stop : {len(TRAILING_NIVEAUX)-1} niveaux progressifs")
 log.info(f"  Marchés : {len(MARCHES)} cryptos")
 log.info(f"  Telegram : {'✅ ON' if TELEGRAM_TOKEN else '❌ OFF'}")
+log.info(f"  Kill switch : {MAX_PERTES_CONSECUTIVES} pertes consécutives → pause {PAUSE_DUREE//3600}h")
 log.info("=" * 55)
 
 def telegram(message):
@@ -324,7 +326,6 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
             nouveau_stop = round(meilleur_prix - distance_trailing, 8)
             if nouveau_stop > stop_actuel:
                 if multiplicateur != niveau_actuel:
-                    # Calcul du gain protégé (PnL si stop touché maintenant)
                     gain_protege = round((nouveau_stop - prix_entree) / prix_entree * mise * LEVIER, 2)
                     log.info(f"  [TRAILING] PnL {'+' if pnl>=0 else ''}{pnl}€ → ATR×{multiplicateur} | Stop : {nouveau_stop} | Protège : ~{gain_protege}€")
                     niveau_actuel = multiplicateur
@@ -395,23 +396,35 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
             return resultat, gain_total, mise, trade_info
 
 def verifier_kill_switch(etat, capital):
+    # Vérification du seuil de ruine
     if capital < CAPITAL_INITIAL * SEUIL_RUINE:
         log.critical(f"SEUIL DE RUINE ! Capital {capital}EUR")
         telegram(f"🚨 <b>SEUIL DE RUINE !</b>\nCapital : {capital}€\nBot arrêté !")
         return "RUINE"
+
+    # Gestion de la pause programmée
     pause_until = etat.get("pause_until", 0)
     if time.time() < pause_until:
         restant = int((pause_until - time.time()) / 60)
         log.info(f"  En pause — {restant} minutes restantes")
         time.sleep(60)
         return "PAUSE"
+    else:
+        # La pause est terminée : on réinitialise le compteur de pertes consécutives
+        if etat.get("pertes_consecutives", 0) >= MAX_PERTES_CONSECUTIVES:
+            log.info("  Fin de la pause → réinitialisation des pertes consécutives à 0")
+            etat["pertes_consecutives"] = 0
+            sauvegarder_etat(etat)
+
+    # Kill switch sur pertes consécutives
     if etat["pertes_consecutives"] >= MAX_PERTES_CONSECUTIVES:
-        log.warning(f"KILL SWITCH — {MAX_PERTES_CONSECUTIVES} pertes consecutives !")
-        telegram(f"⚠️ <b>KILL SWITCH</b>\n{MAX_PERTES_CONSECUTIVES} pertes consécutives\nPause 24h")
+        log.warning(f"KILL SWITCH — {MAX_PERTES_CONSECUTIVES} pertes consécutives !")
+        telegram(f"⚠️ <b>KILL SWITCH</b>\n{MAX_PERTES_CONSECUTIVES} pertes consécutives\nPause {PAUSE_DUREE//3600}h")
         etat["pause_until"]         = int(time.time()) + PAUSE_DUREE
-        etat["pertes_consecutives"] = 0
+        etat["pertes_consecutives"] = 0   # On remet à zéro pour la prochaine session
         sauvegarder_etat(etat)
         return "PAUSE"
+
     return "OK"
 
 def afficher_tableau_de_bord(etat):
@@ -461,8 +474,9 @@ def demarrer_bot():
             if statut == "RUINE":
                 break
             if statut == "PAUSE":
-                etat = charger_etat()
+                etat = charger_etat()   # recharger l'état au cas où
                 continue
+
             symbole, direction, details = choisir_meilleur_marche()
             if direction == "NEUTRE" or symbole is None:
                 etat["nb_skips"] += 1
@@ -470,6 +484,7 @@ def demarrer_bot():
                 log.info(f"  Nouvelle analyse dans 2 minutes...")
                 time.sleep(PAUSE)
                 continue
+
             etat["nb_trades"] += 1
             resultat, gain, mise, trade_info = simuler_trade(
                 symbole, direction, etat["nb_trades"],
@@ -479,8 +494,10 @@ def demarrer_bot():
                 etat["nb_trades"] -= 1
                 time.sleep(PAUSE)
                 continue
+
             etat["capital"]   = round(etat["capital"] + gain, 2)
             etat["cumul_net"] = round(etat["capital"] - CAPITAL_INITIAL, 2)
+
             if resultat == "GAGNE":
                 etat["nb_wins"]            += 1
                 etat["total_gagne"]         = round(etat["total_gagne"] + gain, 2)
@@ -499,6 +516,7 @@ def demarrer_bot():
                     etat["avg_loss_pct"] = perte_pct
                 else:
                     etat["avg_loss_pct"] = round((etat["avg_loss_pct"] * (etat["nb_losses"]-1) + perte_pct) / etat["nb_losses"], 4)
+
             enregistrer_trade({
                 'marche':        symbole,
                 'direction':     direction,
@@ -517,6 +535,7 @@ def demarrer_bot():
                 'rsi':           details.get('rsi'),
             })
             sauvegarder_etat(etat)
+
             etat['historique'].append({
                 'heure':     datetime.now().strftime('%Y-%m-%d %H:%M'),
                 'marche':    symbole,
@@ -526,10 +545,12 @@ def demarrer_bot():
                 'mise':      round(mise, 2),
                 'capital':   etat['capital']
             })
+
             afficher_tableau_de_bord(etat)
             envoyer_rapport_telegram(etat)
             log.info(f"  Pause 2 minutes avant prochain trade...")
             time.sleep(PAUSE)
+
         except KeyboardInterrupt:
             log.info("Bot arrete.")
             break
