@@ -2,7 +2,7 @@
 ╔══════════════════════════════════════════════════════════════╗
 ║           BOT MEAN REVERSION V7.3 — OPTION C                ║
 ║   RSI < 30 → ACHAT | RSI > 70 → VENTE                      ║
-║   10 marchés | H1 | Stop ATR×2.5 | Ratio 1:2               ║
+║   8 marchés | H1 | Stop ATR×2.5 | Ratio 1:2               ║
 ║   Trailing Stop Progressif | Telegram | PostgreSQL           ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -43,24 +43,25 @@ VOLUME_MINI             = 0.40
 ADX_MAX                 = 40
 MAX_PERTES_CONSECUTIVES = 2
 SEUIL_RUINE             = 0.30
-PAUSE_DUREE             = 43200      # 12h au lieu de 24h
+PAUSE_DUREE             = 43200      # 12h
 
 TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
-# Trailing Stop Progressif — niveau 14 changé en 12
+# ========== NOUVEAUX Paliers de Trailing Stop (selon tableau utilisateur) ==========
 TRAILING_NIVEAUX = [
     (100, 0.05),
     ( 75, 0.07),
     ( 50, 0.10),
     ( 35, 0.15),
     ( 25, 0.20),
-    ( 18, 0.30),
-    ( 12, 0.50),   # Modifié : +12€ au lieu de +14€
-    ( 10, 0.80),
-    (  5, 1.50),
+    ( 11, 0.30),   # au lieu de 18
+    (  8, 0.50),   # au lieu de 12
+    (  4, 0.80),   # au lieu de 10
+    (  1, 1.50),   # au lieu de 5
     (  0, 2.50),
 ]
+# ==================================================================================
 
 def get_multiplicateur_atr(pnl):
     for seuil, mult in TRAILING_NIVEAUX:
@@ -68,15 +69,14 @@ def get_multiplicateur_atr(pnl):
             return mult
     return 2.50
 
+# ========== MARCHÉS (sans BTCUSDT ni ETHUSDT) ==========
 MARCHES = [
-    "BTCUSDT", "ETHUSDT", "XRPUSDT", "ATOMUSDT", "LINKUSDT",
+    "XRPUSDT", "ATOMUSDT", "LINKUSDT",
     "ADAUSDT", "SOLUSDT", "AVAXUSDT", "NEARUSDT", "DOTUSDT"
 ]
 
 KRAKEN_SYMBOLS = {
-    "BTCUSDT":  "XXBTZUSD",
-    "ETHUSDT":  "XETHZUSD",
-    "XRPUSDT":  "XXRPZUSD",
+    "XRPUSDT": "XXRPZUSD",
     "ATOMUSDT": "ATOMUSD",
     "LINKUSDT": "LINKUSD",
     "ADAUSDT":  "ADAUSD",
@@ -85,6 +85,7 @@ KRAKEN_SYMBOLS = {
     "NEARUSDT": "NEARUSD",
     "DOTUSDT":  "DOTUSD"
 }
+# =======================================================
 
 log.info("=" * 55)
 log.info("  BOT MEAN REVERSION V7.3 — OPTION C")
@@ -323,19 +324,22 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
             nouveau_stop = round(meilleur_prix - distance_trailing, 8)
             if nouveau_stop > stop_actuel:
                 if multiplicateur != niveau_actuel:
-                    log.info(f"  [TRAILING] PnL {'+' if pnl>=0 else ''}{pnl}€ → ATR×{multiplicateur} | Stop : {nouveau_stop}")
+                    # Calcul du gain protégé (PnL si stop touché maintenant)
+                    gain_protege = round((nouveau_stop - prix_entree) / prix_entree * mise * LEVIER, 2)
+                    log.info(f"  [TRAILING] PnL {'+' if pnl>=0 else ''}{pnl}€ → ATR×{multiplicateur} | Stop : {nouveau_stop} | Protège : ~{gain_protege}€")
                     niveau_actuel = multiplicateur
                 stop_actuel = nouveau_stop
             atteint_partiel = not partiel_execute and prix_actuel >= objectif_partiel
             atteint_final   = prix_actuel >= objectif_final
             atteint_stop    = prix_actuel <= stop_actuel
-        else:
+        else:  # VENTE
             if prix_actuel < meilleur_prix:
                 meilleur_prix = prix_actuel
             nouveau_stop = round(meilleur_prix + distance_trailing, 8)
             if nouveau_stop < stop_actuel:
                 if multiplicateur != niveau_actuel:
-                    log.info(f"  [TRAILING] PnL {'+' if pnl>=0 else ''}{pnl}€ → ATR×{multiplicateur} | Stop : {nouveau_stop}")
+                    gain_protege = round((prix_entree - nouveau_stop) / prix_entree * mise * LEVIER, 2)
+                    log.info(f"  [TRAILING] PnL {'+' if pnl>=0 else ''}{pnl}€ → ATR×{multiplicateur} | Stop : {nouveau_stop} | Protège : ~{gain_protege}€")
                     niveau_actuel = multiplicateur
                 stop_actuel = nouveau_stop
             atteint_partiel = not partiel_execute and prix_actuel <= objectif_partiel
