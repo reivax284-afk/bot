@@ -1,9 +1,9 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║           BOT MEAN REVERSION V7.3 — OPTION C                ║
+║           BOT MEAN REVERSION V7.4 — OPTION C                ║
 ║   RSI < 30 → ACHAT | RSI > 70 → VENTE                      ║
 ║   8 marchés | H1 | Stop ATR×2.5 | Ratio 1:2               ║
-║   Trailing Stop CONTINU | Telegram | PostgreSQL             ║
+║   Trailing Stop CONTINU + BREAK-EVEN VERROUILLÉ            ║
 ║   Paliers : +0.75€, +3€, +7.50€, +12€, +18€...              ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -46,10 +46,13 @@ MAX_PERTES_CONSECUTIVES = 2
 SEUIL_RUINE             = 0.30
 PAUSE_DUREE             = 43200      # 12h
 
+# 🆕 V7.4 — BREAK-EVEN AUTOMATIQUE
+BREAK_EVEN_TRIGGER_PNL  = 0.75   # Dès +0.75€ → stop verrouillé au break-even
+BREAK_EVEN_BUFFER_PCT   = 0.001  # entry + 0.1% (sécurise vraiment)
+
 TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
-# Paliers de Trailing Stop (protection progressive, premier palier à +0.75€)
 TRAILING_NIVEAUX = [
     (100, 0.05),
     ( 75, 0.07),
@@ -70,7 +73,6 @@ def get_multiplicateur_atr(pnl):
             return mult
     return 2.50
 
-# Marchés (sans BTCUSDT ni ETHUSDT)
 MARCHES = [
     "XRPUSDT", "ATOMUSDT", "LINKUSDT",
     "ADAUSDT", "SOLUSDT", "AVAXUSDT", "NEARUSDT", "DOTUSDT"
@@ -88,13 +90,13 @@ KRAKEN_SYMBOLS = {
 }
 
 log.info("=" * 55)
-log.info("  BOT MEAN REVERSION V7.3 — OPTION C (TRAILING CONTINU)")
+log.info("  BOT MEAN REVERSION V7.4 — BREAK-EVEN VERROUILLÉ")
 log.info(f"  Capital : {CAPITAL_INITIAL}EUR | Levier x{LEVIER} | Mise {MISE_FIXE_PCT*100}%")
 log.info(f"  RSI < {RSI_ACHAT} → ACHAT | RSI > {RSI_VENTE} → VENTE")
 log.info(f"  Stop ATR×{ATR_MULTIPLIER} | Ratio 1:{RATIO_RR}")
-log.info(f"  Trailing stop : mise à jour continue, protection dès +0.75€")
+log.info(f"  🔒 Break-even verrouillé dès +{BREAK_EVEN_TRIGGER_PNL}€")
 log.info(f"  Marchés : {len(MARCHES)} cryptos")
-log.info(f"  Telegram : {'✅ ON' if TELEGRAM_TOKEN else '❌ OFF'}")
+log.info(f"  Telegram : {'ON' if TELEGRAM_TOKEN else 'OFF'}")
 log.info("=" * 55)
 
 def telegram(message):
@@ -207,10 +209,10 @@ def analyser_marche(symbole):
         "df": df
     }
     if rsi < RSI_ACHAT:
-        log.info(f"  {symbole} : RSI {rsi} < {RSI_ACHAT} → SURVENDU → ACHAT ✅")
+        log.info(f"  {symbole} : RSI {rsi} < {RSI_ACHAT} → SURVENDU → ACHAT")
         return "ACHAT", details
     elif rsi > RSI_VENTE:
-        log.info(f"  {symbole} : RSI {rsi} > {RSI_VENTE} → SURACHETÉ → VENTE ✅")
+        log.info(f"  {symbole} : RSI {rsi} > {RSI_VENTE} → SURACHETÉ → VENTE")
         return "VENTE", details
     else:
         log.info(f"  {symbole} : RSI {rsi} | ADX {adx} → pas de signal")
@@ -279,7 +281,7 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
     avg_loss = etat["avg_loss_pct"] if etat["avg_loss_pct"] > 0 else distance_stop_pct
     mise     = calculer_mise(capital, etat["nb_trades"], win_rate, avg_win, avg_loss)
     log.info(f"\n  {'='*50}")
-    log.info(f"  TRADE #{numero_trade} [MEAN_REV] — {datetime.now().strftime('%H:%M:%S')}")
+    log.info(f"  TRADE #{numero_trade} [MEAN_REV V7.4] — {datetime.now().strftime('%H:%M:%S')}")
     log.info(f"  {'='*50}")
     log.info(f"  Symbole          : {symbole} ({direction})")
     log.info(f"  RSI              : {details.get('rsi', 0)}")
@@ -288,7 +290,7 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
     log.info(f"  Objectif partiel : {objectif_partiel} (1:{RATIO_PARTIEL})")
     log.info(f"  Objectif final   : {objectif_final} (1:{RATIO_RR})")
     log.info(f"  Mise             : {mise}EUR | Levier x{LEVIER}")
-    log.info(f"  Trailing stop    : PROGRESSIF (11 niveaux, continu)\n")
+    log.info(f"  🔒 Break-even auto : dès +{BREAK_EVEN_TRIGGER_PNL}€\n")
     telegram(f"📊 <b>TRADE #{numero_trade} OUVERT</b>\n"
              f"{'🟢 ACHAT' if direction == 'ACHAT' else '🔴 VENTE'} {symbole}\n"
              f"RSI : {details.get('rsi', 0)}\n"
@@ -296,14 +298,16 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
              f"Stop : {stop_loss} ({round(distance_stop_pct,2)}%)\n"
              f"Objectif : {objectif_final}\n"
              f"Mise : {mise}€ × x{LEVIER}")
-    debut           = time.time()
-    stop_actuel     = stop_loss
-    meilleur_prix   = prix_entree
-    dernier_log     = 0
-    prix_sortie     = prix_entree
-    partiel_execute = False
-    gain_partiel    = 0
-    niveau_actuel   = 2.50
+    debut             = time.time()
+    stop_actuel       = stop_loss
+    meilleur_prix     = prix_entree
+    dernier_log       = 0
+    prix_sortie       = prix_entree
+    partiel_execute   = False
+    gain_partiel      = 0
+    niveau_actuel     = 2.50
+    break_even_locked = False
+    pnl_max_atteint   = 0
     while True:
         time.sleep(CHECK_INTERVAL)
         prix_actuel = get_prix_actuel(symbole)
@@ -316,7 +320,23 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
             pnl = round((prix_entree - prix_actuel) / prix_entree * mise * LEVIER, 2)
         multiplicateur    = get_multiplicateur_atr(pnl)
         distance_trailing = atr * multiplicateur
-        # Mise à jour CONTINUE du stop (même si multiplicateur inchangé)
+
+        if pnl > pnl_max_atteint:
+            pnl_max_atteint = pnl
+
+        if not break_even_locked and pnl_max_atteint >= BREAK_EVEN_TRIGGER_PNL:
+            if direction == "ACHAT":
+                stop_be = round(prix_entree * (1 + BREAK_EVEN_BUFFER_PCT), 8)
+                if stop_be > stop_actuel:
+                    stop_actuel = stop_be
+            else:
+                stop_be = round(prix_entree * (1 - BREAK_EVEN_BUFFER_PCT), 8)
+                if stop_be < stop_actuel:
+                    stop_actuel = stop_be
+            break_even_locked = True
+            log.info(f"  🔒 BREAK-EVEN VERROUILLÉ → Stop : {stop_actuel} (PnL max : +{pnl_max_atteint}€)")
+            telegram(f"🔒 <b>Break-even verrouillé</b>\n{symbole}\nPnL max : +{pnl_max_atteint}€\nStop : {stop_actuel}")
+
         stop_modifie = False
         if direction == "ACHAT":
             if prix_actuel > meilleur_prix:
@@ -325,6 +345,10 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
             if nouveau_stop > stop_actuel:
                 stop_actuel = nouveau_stop
                 stop_modifie = True
+            if break_even_locked:
+                stop_be_min = round(prix_entree * (1 + BREAK_EVEN_BUFFER_PCT), 8)
+                if stop_actuel < stop_be_min:
+                    stop_actuel = stop_be_min
         else:
             if prix_actuel < meilleur_prix:
                 meilleur_prix = prix_actuel
@@ -332,7 +356,11 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
             if nouveau_stop < stop_actuel:
                 stop_actuel = nouveau_stop
                 stop_modifie = True
-        # Log uniquement si le multiplicateur change (pour éviter spam)
+            if break_even_locked:
+                stop_be_max = round(prix_entree * (1 - BREAK_EVEN_BUFFER_PCT), 8)
+                if stop_actuel > stop_be_max:
+                    stop_actuel = stop_be_max
+
         if multiplicateur != niveau_actuel and stop_modifie:
             if direction == "ACHAT":
                 gain_protege = round((stop_actuel - prix_entree) / prix_entree * mise * LEVIER, 2)
@@ -340,7 +368,7 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
                 gain_protege = round((prix_entree - stop_actuel) / prix_entree * mise * LEVIER, 2)
             log.info(f"  [TRAILING] PnL {'+' if pnl>=0 else ''}{pnl}€ → ATR×{multiplicateur} | Stop : {stop_actuel} | Protège : ~{gain_protege}€")
             niveau_actuel = multiplicateur
-        # Vérification des conditions de sortie
+
         if direction == "ACHAT":
             atteint_partiel = not partiel_execute and prix_actuel >= objectif_partiel
             atteint_final   = prix_actuel >= objectif_final
@@ -351,9 +379,10 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
             atteint_stop    = prix_actuel >= stop_actuel
         duree = int((time.time() - debut) / 60)
         if time.time() - dernier_log >= 60:
+            be_flag = " 🔒" if break_even_locked else ""
             log.info(f"  [{datetime.now().strftime('%H:%M:%S')}] {symbole}: {prix_actuel} | "
                      f"PnL: {'+' if pnl >= 0 else ''}{pnl}EUR | "
-                     f"Stop: {stop_actuel} (ATR×{multiplicateur}) | {duree}min"
+                     f"Stop: {stop_actuel} (ATR×{multiplicateur}){be_flag} | {duree}min"
                      f"{' | PARTIEL ✅' if partiel_execute else ''}")
             dernier_log = time.time()
         trade_info = {
@@ -384,9 +413,14 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
                 telegram(f"🛑 <b>STOP (après partiel)</b>\n{symbole} | {'+' if gain_total>=0 else ''}{gain_total}€\nDurée : {duree} min")
                 return resultat, gain_total, mise, trade_info
             else:
-                log.info(f"\n  STOP-LOSS ! {pnl}EUR")
-                telegram(f"🛑 <b>STOP-LOSS</b>\n{symbole} {direction}\nPerte : <b>{pnl}€</b>\nDurée : {duree} min")
-                return "PERDU", pnl, mise, trade_info
+                resultat = "GAGNE" if pnl > 0 else "PERDU"
+                if break_even_locked and pnl >= 0:
+                    log.info(f"\n  🔒 STOP BREAK-EVEN — +{pnl}EUR (profit sécurisé !)")
+                    telegram(f"🔒 <b>STOP BREAK-EVEN</b>\n{symbole}\nGain : +{pnl}€\nDurée : {duree} min")
+                else:
+                    log.info(f"\n  STOP-LOSS ! {pnl}EUR")
+                    telegram(f"🛑 <b>STOP-LOSS</b>\n{symbole} {direction}\nRésultat : {pnl}€\nDurée : {duree} min")
+                return resultat, pnl, mise, trade_info
         if time.time() - debut >= TIMEOUT_TRADE:
             if partiel_execute:
                 gain_reste = round(pnl * 0.5, 2)
@@ -427,7 +461,7 @@ def afficher_tableau_de_bord(etat):
     win_rate = (etat["nb_wins"] / etat["nb_trades"] * 100) if etat["nb_trades"] > 0 else 0
     perf     = ((etat["capital"] - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100)
     log.info(f"\n  {'='*55}")
-    log.info(f"  BOT MEAN REVERSION V7.3 — TABLEAU DE BORD")
+    log.info(f"  BOT MEAN REVERSION V7.4 — TABLEAU DE BORD")
     log.info(f"  {'='*55}")
     log.info(f"  Capital actuel : {round(etat['capital'],2)}EUR ({'+' if perf >= 0 else ''}{round(perf,2)}%)")
     log.info(f"  Trades total   : {etat['nb_trades']}")
@@ -448,7 +482,7 @@ def afficher_tableau_de_bord(etat):
 def envoyer_rapport_telegram(etat):
     win_rate = (etat["nb_wins"] / etat["nb_trades"] * 100) if etat["nb_trades"] > 0 else 0
     perf     = ((etat["capital"] - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100)
-    telegram(f"📈 <b>RAPPORT BOT V7.3</b>\n"
+    telegram(f"📈 <b>RAPPORT BOT V7.4</b>\n"
              f"Capital : <b>{round(etat['capital'],2)}€</b> ({'+' if perf>=0 else ''}{round(perf,2)}%)\n"
              f"Trades : {etat['nb_trades']} | WR : {round(win_rate,1)}%\n"
              f"Gagné : +{round(etat['total_gagne'],2)}€\n"
@@ -456,14 +490,14 @@ def envoyer_rapport_telegram(etat):
              f"<b>NET : {'+' if etat['cumul_net']>=0 else ''}{round(etat['cumul_net'],2)}€</b>")
 
 def demarrer_bot():
-    log.info(f"DEMARRAGE BOT MEAN REVERSION V7.3 — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log.info(f"DEMARRAGE BOT V7.4 — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     init_database()
     etat = charger_etat()
     afficher_tableau_de_bord(etat)
-    telegram(f"🚀 <b>BOT MEAN REVERSION V7.3 DÉMARRÉ</b>\n"
+    telegram(f"🚀 <b>BOT V7.4 DÉMARRÉ</b>\n"
              f"Capital : {round(etat['capital'],2)}€\n"
-             f"Trades : {etat['nb_trades']} | WR : N/A\n"
-             f"Trailing stop continu, protection dès +0.75€\n"
+             f"Trades : {etat['nb_trades']}\n"
+             f"🔒 Break-even auto dès +{BREAK_EVEN_TRIGGER_PNL}€\n"
              f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     while True:
         try:
