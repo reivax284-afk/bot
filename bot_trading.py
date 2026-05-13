@@ -3,9 +3,8 @@
 ║           BOT MEAN REVERSION V7.3 — OPTION C                ║
 ║   RSI < 30 → ACHAT | RSI > 70 → VENTE                      ║
 ║   8 marchés | H1 | Stop ATR×2.5 | Ratio 1:2               ║
-║   Trailing Stop Progressif | Telegram | PostgreSQL           ║
-║   Paliers : +3€, +7.50€, +12€, +18€, +25€, +35€...          ║
-║   PnL / Multiplicateur / Protège affichés                   ║
+║   Trailing Stop CONTINU | Telegram | PostgreSQL             ║
+║   Paliers : +0.75€, +3€, +7.50€, +12€, +18€...              ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -50,18 +49,19 @@ PAUSE_DUREE             = 43200      # 12h
 TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
-# ========== NOUVEAUX Paliers de Trailing Stop ==========
+# Paliers de Trailing Stop (protection progressive, premier palier à +0.75€)
 TRAILING_NIVEAUX = [
-    (100, 0.05),   # PnL ≥ +100€ → ATR × 0.05 → protège ~+97€
-    ( 75, 0.07),   # PnL ≥ +75€  → ATR × 0.07 → protège ~+72€
-    ( 50, 0.10),   # PnL ≥ +50€  → ATR × 0.10 → protège ~+47€
-    ( 35, 0.15),   # PnL ≥ +35€  → ATR × 0.15 → protège ~+32€
-    ( 25, 0.20),   # PnL ≥ +25€  → ATR × 0.20 → protège ~+22€
-    ( 18, 0.30),   # PnL ≥ +18€  → ATR × 0.30 → protège ~+15€
-    ( 12, 0.50),   # PnL ≥ +12€  → ATR × 0.50 → protège ~+10€
-    (7.5, 0.80),   # PnL ≥ +7.50€ → ATR × 0.80 → protège ~+5€
-    (  3, 1.50),   # PnL ≥ +3€   → ATR × 1.50 → protège ~+1€
-    (  0, 2.50),   # défaut        → ATR × 2.50
+    (100, 0.05),
+    ( 75, 0.07),
+    ( 50, 0.10),
+    ( 35, 0.15),
+    ( 25, 0.20),
+    ( 18, 0.30),
+    ( 12, 0.50),
+    (7.5, 0.80),
+    (  3, 1.50),
+    (0.75, 2.00),
+    (  0, 2.50),
 ]
 
 def get_multiplicateur_atr(pnl):
@@ -70,7 +70,7 @@ def get_multiplicateur_atr(pnl):
             return mult
     return 2.50
 
-# ========== MARCHÉS (sans BTCUSDT ni ETHUSDT) ==========
+# Marchés (sans BTCUSDT ni ETHUSDT)
 MARCHES = [
     "XRPUSDT", "ATOMUSDT", "LINKUSDT",
     "ADAUSDT", "SOLUSDT", "AVAXUSDT", "NEARUSDT", "DOTUSDT"
@@ -86,15 +86,13 @@ KRAKEN_SYMBOLS = {
     "NEARUSDT": "NEARUSD",
     "DOTUSDT":  "DOTUSD"
 }
-# =======================================================
 
 log.info("=" * 55)
-log.info("  BOT MEAN REVERSION V7.3 — OPTION C")
+log.info("  BOT MEAN REVERSION V7.3 — OPTION C (TRAILING CONTINU)")
 log.info(f"  Capital : {CAPITAL_INITIAL}EUR | Levier x{LEVIER} | Mise {MISE_FIXE_PCT*100}%")
 log.info(f"  RSI < {RSI_ACHAT} → ACHAT | RSI > {RSI_VENTE} → VENTE")
 log.info(f"  Stop ATR×{ATR_MULTIPLIER} | Ratio 1:{RATIO_RR}")
-log.info(f"  Trailing Stop : {len(TRAILING_NIVEAUX)-1} niveaux progressifs")
-log.info(f"  Paliers : +3€, +7.50€, +12€, +18€, +25€, +35€, +50€...")
+log.info(f"  Trailing stop : mise à jour continue, protection dès +0.75€")
 log.info(f"  Marchés : {len(MARCHES)} cryptos")
 log.info(f"  Telegram : {'✅ ON' if TELEGRAM_TOKEN else '❌ OFF'}")
 log.info("=" * 55)
@@ -201,7 +199,7 @@ def analyser_marche(symbole):
     prix    = df['close'].iloc[-1]
     atr_pct = (atr / prix) * 100
     if adx > ADX_MAX:
-        log.info(f"  {symbole} : ADX {adx} > {ADX_MAX} → tendance forte → skip")
+        log.info(f"  {symbole} : ADX {adx} > {ADX_MAX} → skip")
         return "NEUTRE", {}
     details = {
         "adx": adx, "atr": atr, "rsi": rsi,
@@ -209,12 +207,10 @@ def analyser_marche(symbole):
         "df": df
     }
     if rsi < RSI_ACHAT:
-        log.info(f"  {symbole} : RSI {rsi} < {RSI_ACHAT} → SURVENDU → ACHAT ✅ "
-                 f"(ADX {adx} | Vol {volume_ratio}% | ATR {round(atr_pct,2)}%)")
+        log.info(f"  {symbole} : RSI {rsi} < {RSI_ACHAT} → SURVENDU → ACHAT ✅")
         return "ACHAT", details
     elif rsi > RSI_VENTE:
-        log.info(f"  {symbole} : RSI {rsi} > {RSI_VENTE} → SURACHETÉ → VENTE ✅ "
-                 f"(ADX {adx} | Vol {volume_ratio}% | ATR {round(atr_pct,2)}%)")
+        log.info(f"  {symbole} : RSI {rsi} > {RSI_VENTE} → SURACHETÉ → VENTE ✅")
         return "VENTE", details
     else:
         log.info(f"  {symbole} : RSI {rsi} | ADX {adx} → pas de signal")
@@ -292,7 +288,7 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
     log.info(f"  Objectif partiel : {objectif_partiel} (1:{RATIO_PARTIEL})")
     log.info(f"  Objectif final   : {objectif_final} (1:{RATIO_RR})")
     log.info(f"  Mise             : {mise}EUR | Levier x{LEVIER}")
-    log.info(f"  Trailing stop    : PROGRESSIF (10 niveaux)\n")
+    log.info(f"  Trailing stop    : PROGRESSIF (11 niveaux, continu)\n")
     telegram(f"📊 <b>TRADE #{numero_trade} OUVERT</b>\n"
              f"{'🟢 ACHAT' if direction == 'ACHAT' else '🔴 VENTE'} {symbole}\n"
              f"RSI : {details.get('rsi', 0)}\n"
@@ -320,29 +316,36 @@ def simuler_trade(symbole, direction, numero_trade, capital, details, etat):
             pnl = round((prix_entree - prix_actuel) / prix_entree * mise * LEVIER, 2)
         multiplicateur    = get_multiplicateur_atr(pnl)
         distance_trailing = atr * multiplicateur
+        # Mise à jour CONTINUE du stop (même si multiplicateur inchangé)
+        stop_modifie = False
         if direction == "ACHAT":
             if prix_actuel > meilleur_prix:
                 meilleur_prix = prix_actuel
             nouveau_stop = round(meilleur_prix - distance_trailing, 8)
             if nouveau_stop > stop_actuel:
-                if multiplicateur != niveau_actuel:
-                    gain_protege = round((nouveau_stop - prix_entree) / prix_entree * mise * LEVIER, 2)
-                    log.info(f"  [TRAILING] PnL {'+' if pnl>=0 else ''}{pnl}€ → ATR×{multiplicateur} | Stop : {nouveau_stop} | Protège : ~{gain_protege}€")
-                    niveau_actuel = multiplicateur
                 stop_actuel = nouveau_stop
-            atteint_partiel = not partiel_execute and prix_actuel >= objectif_partiel
-            atteint_final   = prix_actuel >= objectif_final
-            atteint_stop    = prix_actuel <= stop_actuel
-        else:  # VENTE
+                stop_modifie = True
+        else:
             if prix_actuel < meilleur_prix:
                 meilleur_prix = prix_actuel
             nouveau_stop = round(meilleur_prix + distance_trailing, 8)
             if nouveau_stop < stop_actuel:
-                if multiplicateur != niveau_actuel:
-                    gain_protege = round((prix_entree - nouveau_stop) / prix_entree * mise * LEVIER, 2)
-                    log.info(f"  [TRAILING] PnL {'+' if pnl>=0 else ''}{pnl}€ → ATR×{multiplicateur} | Stop : {nouveau_stop} | Protège : ~{gain_protege}€")
-                    niveau_actuel = multiplicateur
                 stop_actuel = nouveau_stop
+                stop_modifie = True
+        # Log uniquement si le multiplicateur change (pour éviter spam)
+        if multiplicateur != niveau_actuel and stop_modifie:
+            if direction == "ACHAT":
+                gain_protege = round((stop_actuel - prix_entree) / prix_entree * mise * LEVIER, 2)
+            else:
+                gain_protege = round((prix_entree - stop_actuel) / prix_entree * mise * LEVIER, 2)
+            log.info(f"  [TRAILING] PnL {'+' if pnl>=0 else ''}{pnl}€ → ATR×{multiplicateur} | Stop : {stop_actuel} | Protège : ~{gain_protege}€")
+            niveau_actuel = multiplicateur
+        # Vérification des conditions de sortie
+        if direction == "ACHAT":
+            atteint_partiel = not partiel_execute and prix_actuel >= objectif_partiel
+            atteint_final   = prix_actuel >= objectif_final
+            atteint_stop    = prix_actuel <= stop_actuel
+        else:
             atteint_partiel = not partiel_execute and prix_actuel <= objectif_partiel
             atteint_final   = prix_actuel <= objectif_final
             atteint_stop    = prix_actuel >= stop_actuel
@@ -460,7 +463,7 @@ def demarrer_bot():
     telegram(f"🚀 <b>BOT MEAN REVERSION V7.3 DÉMARRÉ</b>\n"
              f"Capital : {round(etat['capital'],2)}€\n"
              f"Trades : {etat['nb_trades']} | WR : N/A\n"
-             f"Paliers : +3€, +7.50€, +12€, +18€, +25€, +35€...\n"
+             f"Trailing stop continu, protection dès +0.75€\n"
              f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     while True:
         try:
