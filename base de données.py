@@ -47,7 +47,7 @@ def init_database():
         conn.run("""
             CREATE TABLE IF NOT EXISTS bot_state (
                 id INTEGER PRIMARY KEY DEFAULT 1,
-                capital NUMERIC(15,2) NOT NULL DEFAULT 50.0,
+                capital NUMERIC(15,2) NOT NULL DEFAULT 500.0,
                 total_gagne NUMERIC(15,2) NOT NULL DEFAULT 0.0,
                 total_perdu NUMERIC(15,2) NOT NULL DEFAULT 0.0,
                 cumul_net NUMERIC(15,2) NOT NULL DEFAULT 0.0,
@@ -89,8 +89,8 @@ def init_database():
             ON trade_history(timestamp DESC)
         """)
         conn.run("""
-            INSERT INTO bot_state (id)
-            VALUES (1)
+            INSERT INTO bot_state (id, capital)
+            VALUES (1, 500.0)
             ON CONFLICT (id) DO NOTHING
         """)
         logger.info("Base PostgreSQL initialisee")
@@ -113,12 +113,12 @@ def charger_etat():
 
         etat = dict(zip(columns, rows[0]))
 
-        for key in ['capital','total_gagne','total_perdu','cumul_net',
-                    'avg_win_pct','avg_loss_pct']:
+        for key in ['capital', 'total_gagne', 'total_perdu', 'cumul_net',
+                    'avg_win_pct', 'avg_loss_pct']:
             if etat.get(key) is not None:
                 etat[key] = float(etat[key])
 
-        for key in ['nb_trades','nb_wins','nb_losses','nb_skips',
+        for key in ['nb_trades', 'nb_wins', 'nb_losses', 'nb_skips',
                     'pertes_consecutives']:
             if etat.get(key) is not None:
                 etat[key] = int(etat[key])
@@ -174,7 +174,7 @@ def sauvegarder_etat(etat):
                 updated_at=NOW()
             WHERE id=1
         """,
-        capital=etat.get('capital', 50.0),
+        capital=etat.get('capital', 500.0),
         total_gagne=etat.get('total_gagne', 0.0),
         total_perdu=etat.get('total_perdu', 0.0),
         cumul_net=etat.get('cumul_net', 0.0),
