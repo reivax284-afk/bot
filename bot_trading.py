@@ -40,8 +40,7 @@ MAX_TRADES_SIMULTANES   = 10         # 10 marchés max = 1 par marché
 # ── Détection signal mean reversion — surveillance temps réel
 SEUIL_MOUVEMENT_PCT     = 0.50   # dès que le prix bouge de 0.50% → signal
 VOLUME_MINI             = 0.25   # volume min vs moyenne 24h
-STOP_LOSS_PCT           = 2.0    # stop = 2% du capital
-STOP_LOSS_MISE_MAX_PCT  = 0.50   # stop plafonné à 50% de la mise
+STOP_LOSS_FIXE          = 5.0    # stop fixe = -5€ par trade, ni plus ni moins
 
 # ── Filtre RSI 1h
 RSI_SEUIL_BAS           = 45     # RSI < 45 → marché baissier → inverser ACHAT en VENTE
@@ -105,6 +104,7 @@ def get_marches_actifs():
 trades_ouverts    = {}    # { symbole: True }
 prix_reference    = {}    # { symbole: prix_au_moment_du_scan }
 cooldown_marches  = {}    # { symbole: timestamp_fin_cooldown }
+pertes_par_marche = {}    # { symbole: nb_pertes_consecutives }
 trades_lock       = None  # initialisé dans boucle_principale()
 
 log.info("=" * 60)
@@ -113,7 +113,7 @@ log.info(f"  Capital : {CAPITAL_INITIAL}€ | Levier x{LEVIER}")
 log.info(f"  Marchés : {len(MARCHES)} cryptos | 24h/24 — 7j/7")
 log.info(f"  Signal : mouvement ≥ {SEUIL_MOUVEMENT_PCT}% depuis le prix de référence")
 log.info(f"  RSI 1h : seuil bas={RSI_SEUIL_BAS} | seuil haut={RSI_SEUIL_HAUT}")
-log.info(f"  Stop : {STOP_LOSS_PCT}% capital | plafonné {int(STOP_LOSS_MISE_MAX_PCT*100)}% mise")
+log.info(f"  Stop : fixe {STOP_LOSS_FIXE}€ par trade")
 log.info(f"  Kill switch : {KILL_SWITCH_JOUR}€/jour | Ruine : {SEUIL_RUINE}€")
 log.info(f"  Pas de timeout — trades ouverts jusqu'au stop ou au lock")
 log.info(f"  Telegram : {'ON' if TELEGRAM_TOKEN else 'OFF'}")
@@ -338,12 +338,8 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
 
     mise = calculer_mise(capital, etat_global)
 
-    # Stop loss : 2% du capital, plafonné à 50% de la mise
-    stop_loss_eur     = round(capital * STOP_LOSS_PCT / 100, 2)
-    stop_loss_max_mise = round(mise * STOP_LOSS_MISE_MAX_PCT, 2)
-    if stop_loss_eur > stop_loss_max_mise:
-        stop_loss_eur = stop_loss_max_mise
-        log.info(f"  ⚠️ Stop plafonné à 50% mise : -{stop_loss_eur}€")
+    # Stop loss fixe : -5€ par trade, ni plus ni moins
+    stop_loss_eur = STOP_LOSS_FIXE
 
     rsi_1h = details.get("rsi_1h", 50.0)
 
@@ -366,7 +362,7 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
     log.info(f"  {symbole} ({direction})")
     log.info(f"  Variation : {details.get('variation_pct', 0):.2f}% | "
              f"Ref={details.get('prix_ref')} → {details.get('prix_actuel')}")
-    log.info(f"  Vol={details.get('vol_ratio', 0):.2f}x | RSI 1h={rsi_1h} | Stop : -{stop_loss_eur}€")
+    log.info(f"  Vol={details.get('vol_ratio', 0):.2f}x | RSI 1h={rsi_1h} | Stop fixe : -{stop_loss_eur}€")
     log.info(f"  Prix entrée : {prix_entree} | Stop : {stop_initial} | Obj : {objectif_final}")
     log.info(f"  Mise : {mise}€ × x{LEVIER} = {round(mise*LEVIER,2)}€ | Trades : {len(trades_ouverts)}/{MAX_TRADES_SIMULTANES}\n")
 
@@ -462,15 +458,26 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
     async with trades_lock:
         trades_ouverts.pop(symbole, None)
         if resultat_final == "PERDU" or gain_final < 0:
-            # Cooldown jusqu'à minuit heure Guyane après une perte
-            maintenant_guyane = datetime.utcnow() - timedelta(hours=3)
-            minuit_demain     = maintenant_guyane.replace(
-                hour=0, minute=0, second=0, microsecond=0
-            ) + timedelta(days=1)
-            minuit_demain_utc = minuit_demain + timedelta(hours=3)
-            cooldown_marches[symbole] = minuit_demain_utc.timestamp()
-            log.info(f"  ❄️ [{symbole}] pause jusqu'à minuit")
+            pertes_marche = pertes_par_marche.get(symbole, 0) + 1
+            pertes_par_marche[symbole] = pertes_marche
+            if pertes_marche >= 2:
+                # 2 pertes consécutives → banni jusqu'à minuit
+                maintenant_guyane = datetime.utcnow() - timedelta(hours=3)
+                minuit_demain     = maintenant_guyane.replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ) + timedelta(days=1)
+                minuit_demain_utc = minuit_demain + timedelta(hours=3)
+                cooldown_marches[symbole] = minuit_demain_utc.timestamp()
+                pertes_par_marche[symbole] = 0
+                log.info(f"  ❄️ [{symbole}] 2 pertes consécutives → banni jusqu'à minuit")
+                await telegram(session,
+                    f"🐉❄️ <b>{symbole} BANNI jusqu'à minuit</b>\n"
+                    f"2 pertes consécutives sur ce marché"
+                )
+            else:
+                log.info(f"  ⚠️ [{symbole}] 1ère perte — encore 1 trade autorisé")
         else:
+            pertes_par_marche[symbole] = 0
             cooldown_marches.pop(symbole, None)
             log.info(f"  ✅ [{symbole}] libéré — trade gagnant")
 
