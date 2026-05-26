@@ -40,7 +40,8 @@ MAX_TRADES_SIMULTANES   = 10         # 10 marchés max = 1 par marché
 # ── Détection signal mean reversion — surveillance temps réel
 SEUIL_MOUVEMENT_PCT     = 0.50   # dès que le prix bouge de 0.50% → signal
 VOLUME_MINI             = 0.25   # volume min vs moyenne 24h
-STOP_LOSS_FIXE          = 5.0    # stop fixe = -5€ par trade, ni plus ni moins
+STOP_LOSS_FIXE          = 3.0    # stop fixe = -3€ par trade, ni plus ni moins
+ADX_MAX                 = 45     # si ADX > 45 → tendance forte → on ne trade pas
 
 # ── Filtre RSI 1h
 RSI_SEUIL_BAS           = 45     # RSI < 45 → marché baissier → inverser ACHAT en VENTE
@@ -190,6 +191,15 @@ async def get_prix_actuel(session, symbole):
 # ═══════════════════════════════════════════════════════════════
 #  INDICATEURS
 # ═══════════════════════════════════════════════════════════════
+def calc_adx(df, periode=14):
+    try:
+        from ta.trend import ADXIndicator
+        ind = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=periode)
+        val = ind.adx().iloc[-1]
+        return round(float(val), 2) if not pd.isna(val) else 0.0
+    except Exception:
+        return 0.0
+
 def calc_atr(df, periode=14):
     try:
         val = AverageTrueRange(
@@ -253,10 +263,12 @@ async def analyser_marche(session, symbole):
     vol_ratio = 0.0
     atr_val   = 0.0
     rsi_1h    = 50.0
+    adx_val   = 0.0
 
     if df_15m is not None and len(df_15m) >= 15:
         vol_ratio = calc_volume_ratio(df_15m)
         atr_val   = calc_atr(df_15m)
+        adx_val   = calc_adx(df_15m)
 
     if df_1h is not None and len(df_1h) >= 20:
         rsi_1h = calc_rsi_1h(df_1h, RSI_PERIODE)
@@ -266,8 +278,14 @@ async def analyser_marche(session, symbole):
         log.info(f"  {symbole} : Vol {vol_ratio:.2f}x | Variation={variation_pct:+.2f}% → skip volume")
         return "NEUTRE", {}
 
+    # Filtre ADX — tendance trop forte → mean reversion risquée
+    if adx_val > ADX_MAX:
+        log.info(f"  {symbole} : ADX {adx_val} > {ADX_MAX} → tendance forte → skip")
+        return "NEUTRE", {}
+
     details = {
         "atr":           atr_val,
+        "adx":           adx_val,
         "vol_ratio":     vol_ratio,
         "rsi_1h":        rsi_1h,
         "variation_pct": abs(variation_pct),
@@ -342,7 +360,7 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
 
     mise = calculer_mise(capital, etat_global)
 
-    # Stop loss fixe : -5€ par trade, ni plus ni moins
+    # Stop loss fixe : -3€ par trade, ni plus ni moins
     stop_loss_eur = STOP_LOSS_FIXE
 
     rsi_1h = details.get("rsi_1h", 50.0)
@@ -383,7 +401,7 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
     pnl_max_atteint = 0.0
     lock_actuel     = 0.0
     resultat_final  = "PERDU"   # valeur par défaut sécurisée si exception
-    gain_final      = -STOP_LOSS_FIXE  # perte max par défaut sécurisée
+    gain_final      = -STOP_LOSS_FIXE  # perte max par défaut sécurisée (-3€)
     prix_sortie     = prix_entree
     pnl             = 0.0
     duree           = 0
@@ -546,7 +564,7 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
         'capital_apres': etat_global['capital'],
         'duree_minutes': duree,
         'score':         None,
-        'adx':           None,
+        'adx':           details.get("adx", None),
         'atr':           details.get("atr", None),
         'rsi':           rsi_1h,
     })
