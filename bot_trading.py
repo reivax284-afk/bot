@@ -148,7 +148,7 @@ async def get_klines(session, symbole, interval=15, limite=50):
             timeout=aiohttp.ClientTimeout(total=15)
         ) as resp:
             data = await resp.json()
-            if data.get("error"):
+            if data.get("error") and data["error"]:
                 return None
             result = data.get("result", {})
             keys = [k for k in result.keys() if k != "last"]
@@ -196,7 +196,7 @@ def calc_atr(df, periode=14):
             high=df['high'], low=df['low'], close=df['close'], window=periode
         ).average_true_range().iloc[-1]
         return round(float(val), 8) if not pd.isna(val) else 0.0
-    except:
+    except Exception:
         return 0.0
 
 def calc_volume_ratio(df):
@@ -205,10 +205,14 @@ def calc_volume_ratio(df):
         volumes = df['volume'].tolist()
         if len(volumes) < 10:
             return 0.0
-        moyenne = sum(volumes[-25:-1]) / 24
+        echantillon = volumes[-25:-1]
+        nb          = len(echantillon)
+        if nb == 0:
+            return 0.0
+        moyenne = sum(echantillon) / nb
         recent  = volumes[-2]   # dernière bougie FERMÉE
         return round(recent / moyenne, 2) if moyenne > 0 else 0.0
-    except:
+    except Exception:
         return 0.0
 
 def calc_rsi_1h(df, periode=14):
@@ -218,7 +222,7 @@ def calc_rsi_1h(df, periode=14):
             return 50.0
         val = RSIIndicator(close=df['close'], window=periode).rsi().iloc[-1]
         return round(float(val), 2) if not pd.isna(val) else 50.0
-    except:
+    except Exception:
         return 50.0
 
 # ═══════════════════════════════════════════════════════════════
@@ -275,9 +279,13 @@ async def analyser_marche(session, symbole):
     if variation_pct <= -SEUIL_MOUVEMENT_PCT:
         prix_reference[symbole] = prix_actuel
         if rsi_1h < RSI_SEUIL_BAS:
-            # Marché baissier → pas de contre-tendance → VENTE
+            # Marché baissier → tendance baissière confirmée → VENTE
             log.info(f"  {symbole} 🔄 ACHAT→VENTE | RSI={rsi_1h} < {RSI_SEUIL_BAS} | Vol={vol_ratio:.2f}x")
             return "VENTE", details
+        elif rsi_1h > RSI_SEUIL_HAUT:
+            # RSI élevé sur une chute → signal douteux → NEUTRE
+            log.info(f"  {symbole} ⛔ ACHAT bloqué | RSI={rsi_1h} > {RSI_SEUIL_HAUT} (marché haussier sur chute) | Vol={vol_ratio:.2f}x")
+            return "NEUTRE", {}
         else:
             log.info(f"  {symbole} ✅ ACHAT | Chute={variation_pct:.2f}% | RSI={rsi_1h} | Vol={vol_ratio:.2f}x")
             return "ACHAT", details
@@ -286,9 +294,13 @@ async def analyser_marche(session, symbole):
     if variation_pct >= SEUIL_MOUVEMENT_PCT:
         prix_reference[symbole] = prix_actuel
         if rsi_1h > RSI_SEUIL_HAUT:
-            # Marché haussier → pas de contre-tendance → ACHAT
+            # Marché haussier → tendance haussière confirmée → ACHAT
             log.info(f"  {symbole} 🔄 VENTE→ACHAT | RSI={rsi_1h} > {RSI_SEUIL_HAUT} | Vol={vol_ratio:.2f}x")
             return "ACHAT", details
+        elif rsi_1h < RSI_SEUIL_BAS:
+            # RSI bas sur une montée → signal douteux → NEUTRE
+            log.info(f"  {symbole} ⛔ VENTE bloquée | RSI={rsi_1h} < {RSI_SEUIL_BAS} (marché baissier sur montée) | Vol={vol_ratio:.2f}x")
+            return "NEUTRE", {}
         else:
             log.info(f"  {symbole} ✅ VENTE | Montée={variation_pct:.2f}% | RSI={rsi_1h} | Vol={vol_ratio:.2f}x")
             return "VENTE", details
@@ -352,13 +364,11 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
         stop_initial   = round(prix_entree * (1 + ratio_prix), 8)
         objectif_final = round(prix_entree * (1 - ratio_prix * 2), 8)
 
-    # Numéro de trade
-    async with trades_lock:
-        etat_global["nb_trades"] = etat_global.get("nb_trades", 0) + 1
-        numero_trade = etat_global["nb_trades"]
+    # Numéro de trade — sera attribué dans le lock final
+    numero_trade = 0
 
     log.info(f"\n  {'='*55}")
-    log.info(f"  TRADE #{numero_trade} [REIVAX284 V4] — {datetime.now().strftime('%H:%M:%S')}")
+    log.info(f"  TRADE EN COURS [REIVAX284 V4] — {datetime.now().strftime('%H:%M:%S')}")
     log.info(f"  {symbole} ({direction})")
     log.info(f"  Variation : {details.get('variation_pct', 0):.2f}% | "
              f"Ref={details.get('prix_ref')} → {details.get('prix_actuel')}")
@@ -367,7 +377,7 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
     log.info(f"  Mise : {mise}€ × x{LEVIER} = {round(mise*LEVIER,2)}€ | Trades : {len(trades_ouverts)}/{MAX_TRADES_SIMULTANES}\n")
 
     await telegram(session,
-        f"🐉📊 <b>TRADE #{numero_trade} — REIVAX284 V4</b>\n"
+        f"🐉📊 <b>TRADE OUVERT — REIVAX284 V4</b>\n"
         f"{'🟢 ACHAT' if direction == 'ACHAT' else '🔴 VENTE'} {symbole}\n"
         f"Variation : {details.get('variation_pct', 0):.2f}% depuis ref\n"
         f"Volume : {details.get('vol_ratio', 0):.2f}x | RSI 1h : {rsi_1h}\n"
@@ -380,9 +390,11 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
     dernier_log     = 0
     pnl_max_atteint = 0.0
     lock_actuel     = 0.0
-    resultat_final  = None
-    gain_final      = 0.0
+    resultat_final  = "PERDU"   # valeur par défaut sécurisée si exception
+    gain_final      = -STOP_LOSS_FIXE  # perte max par défaut sécurisée
     prix_sortie     = prix_entree
+    pnl             = 0.0
+    duree           = 0
 
     # ── Boucle de surveillance — sans timeout
     while True:
@@ -443,7 +455,10 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
             dernier_log = time.time()
 
         if atteint_stop:
-            resultat_final = "GAGNE" if pnl > 0 else "PERDU"
+            if pnl > 0:
+                resultat_final = "GAGNE"
+            else:
+                resultat_final = "PERDU"
             log.info(f"\n  🛑 STOP [{symbole}] {'+' if pnl>=0 else ''}{pnl:.2f}€ | {duree}min")
             await telegram(session,
                 f"🐉🛑 <b>STOP</b>\n"
@@ -454,14 +469,14 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
             gain_final = pnl
             break
 
-    # ── Libérer le marché
+    # ── Libérer le marché + mise à jour état global dans un seul lock
+    telegram_banni = False
     async with trades_lock:
         trades_ouverts.pop(symbole, None)
-        if resultat_final == "PERDU" or gain_final < 0:
+        if resultat_final == "PERDU":
             pertes_marche = pertes_par_marche.get(symbole, 0) + 1
             pertes_par_marche[symbole] = pertes_marche
             if pertes_marche >= 2:
-                # 2 pertes consécutives → banni jusqu'à minuit
                 maintenant_guyane = datetime.utcnow() - timedelta(hours=3)
                 minuit_demain     = maintenant_guyane.replace(
                     hour=0, minute=0, second=0, microsecond=0
@@ -469,11 +484,8 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
                 minuit_demain_utc = minuit_demain + timedelta(hours=3)
                 cooldown_marches[symbole] = minuit_demain_utc.timestamp()
                 pertes_par_marche[symbole] = 0
+                telegram_banni = True
                 log.info(f"  ❄️ [{symbole}] 2 pertes consécutives → banni jusqu'à minuit")
-                await telegram(session,
-                    f"🐉❄️ <b>{symbole} BANNI jusqu'à minuit</b>\n"
-                    f"2 pertes consécutives sur ce marché"
-                )
             else:
                 log.info(f"  ⚠️ [{symbole}] 1ère perte — encore 1 trade autorisé")
         else:
@@ -481,8 +493,9 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
             cooldown_marches.pop(symbole, None)
             log.info(f"  ✅ [{symbole}] libéré — trade gagnant")
 
-    # ── Mise à jour état global
-    async with trades_lock:
+        # Mise à jour capital et stats dans le même lock — pas de race condition
+        etat_global["nb_trades"] = etat_global.get("nb_trades", 0) + 1
+        numero_trade             = etat_global["nb_trades"]
         etat_global["capital"]   = round(etat_global["capital"] + gain_final, 2)
         etat_global["cumul_net"] = round(etat_global["capital"] - CAPITAL_INITIAL, 2)
         etat_global["pnl_jour"]  = round(etat_global.get("pnl_jour", 0) + gain_final, 2)
@@ -502,7 +515,7 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
             etat_global["total_perdu"]         = round(etat_global.get("total_perdu", 0) + abs(gain_final), 2)
             etat_global["pertes_consecutives"] = etat_global.get("pertes_consecutives", 0) + 1
             etat_global["wins_consecutifs"]    = 0
-            n         = etat_global.get("nb_losses", 1)
+            n         = etat_global["nb_losses"]
             perte_pct = (abs(gain_final) / max(mise * LEVIER, 1)) * 100
             etat_global["avg_loss_pct"] = round(
                 (etat_global.get("avg_loss_pct", 0) * (n - 1) + perte_pct) / n, 4
@@ -520,6 +533,13 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
             'rsi':           rsi_1h,
             'vol_ratio':     details.get("vol_ratio", 0.0),
         })
+
+    # Telegram HORS du lock pour ne pas le bloquer
+    if telegram_banni:
+        await telegram(session,
+            f"🐉❄️ <b>{symbole} BANNI jusqu'à minuit</b>\n"
+            f"2 pertes consécutives sur ce marché"
+        )
 
     enregistrer_trade({
         'marche':        symbole,
@@ -542,17 +562,17 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
     afficher_tableau_de_bord(etat_global)
 
     # Rapport Telegram après chaque trade
-    nb_trades = etat_global.get("nb_trades", 0)
+    nb_trades_total = etat_global.get("nb_trades", 0)
     nb_wins   = etat_global.get("nb_wins", 0)
-    win_rate  = (nb_wins / nb_trades * 100) if nb_trades > 0 else 0
+    win_rate  = (nb_wins / nb_trades_total * 100) if nb_trades_total > 0 else 0
     perf      = (etat_global["capital"] - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100
     await telegram(session,
-        f"🐉📈 <b>RAPPORT REIVAX284</b>\n"
+        f"🐉📈 <b>RAPPORT REIVAX284 — Trade #{numero_trade}</b>\n"
         f"Capital : <b>{round(etat_global['capital'],2)}€</b> "
         f"({'+' if perf>=0 else ''}{round(perf,2)}%)\n"
         f"PnL jour : {'+' if etat_global.get('pnl_jour',0)>=0 else ''}"
         f"{round(etat_global.get('pnl_jour',0),2)}€\n"
-        f"Trades : {nb_trades} | WR : {round(win_rate,1)}%\n"
+        f"Trades : {nb_trades_total} | WR : {round(win_rate,1)}%\n"
         f"Gagné : +{round(etat_global.get('total_gagne',0),2)}€ | "
         f"Perdu : -{round(etat_global.get('total_perdu',0),2)}€\n"
         f"<b>NET : {'+' if etat_global.get('cumul_net',0)>=0 else ''}"
