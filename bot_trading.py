@@ -282,10 +282,6 @@ async def analyser_marche(session, symbole):
             # Marché baissier → tendance baissière confirmée → VENTE
             log.info(f"  {symbole} 🔄 ACHAT→VENTE | RSI={rsi_1h} < {RSI_SEUIL_BAS} | Vol={vol_ratio:.2f}x")
             return "VENTE", details
-        elif rsi_1h > RSI_SEUIL_HAUT:
-            # RSI élevé sur une chute → signal douteux → NEUTRE
-            log.info(f"  {symbole} ⛔ ACHAT bloqué | RSI={rsi_1h} > {RSI_SEUIL_HAUT} (marché haussier sur chute) | Vol={vol_ratio:.2f}x")
-            return "NEUTRE", {}
         else:
             log.info(f"  {symbole} ✅ ACHAT | Chute={variation_pct:.2f}% | RSI={rsi_1h} | Vol={vol_ratio:.2f}x")
             return "ACHAT", details
@@ -297,10 +293,6 @@ async def analyser_marche(session, symbole):
             # Marché haussier → tendance haussière confirmée → ACHAT
             log.info(f"  {symbole} 🔄 VENTE→ACHAT | RSI={rsi_1h} > {RSI_SEUIL_HAUT} | Vol={vol_ratio:.2f}x")
             return "ACHAT", details
-        elif rsi_1h < RSI_SEUIL_BAS:
-            # RSI bas sur une montée → signal douteux → NEUTRE
-            log.info(f"  {symbole} ⛔ VENTE bloquée | RSI={rsi_1h} < {RSI_SEUIL_BAS} (marché baissier sur montée) | Vol={vol_ratio:.2f}x")
-            return "NEUTRE", {}
         else:
             log.info(f"  {symbole} ✅ VENTE | Montée={variation_pct:.2f}% | RSI={rsi_1h} | Vol={vol_ratio:.2f}x")
             return "VENTE", details
