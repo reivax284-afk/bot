@@ -39,7 +39,7 @@ MAX_TRADES_SIMULTANES   = 10         # 10 marchés max = 1 par marché
 
 # ── Détection signal mean reversion — surveillance temps réel
 SEUIL_MOUVEMENT_PCT     = 0.50   # dès que le prix bouge de 0.50% → signal
-VOLUME_MINI             = 0.25   # volume min vs moyenne 24h
+VOLUME_MINI             = 0.30   # volume min vs moyenne 24h
 STOP_LOSS_FIXE          = 3.0    # stop fixe = -3€ par trade, ni plus ni moins
 ADX_MAX                 = 40     # si ADX > 40 → tendance forte → on ne trade pas
 
