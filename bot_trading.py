@@ -33,29 +33,28 @@ LEVIER                  = 10
 MISE_BASE_PCT           = 0.10
 MISE_MIN                = 10.0
 MISE_MAX_PCT            = 0.25
-CHECK_INTERVAL          = 10         # secondes entre chaque check prix
-PAUSE_SCAN              = 30         # secondes entre chaque scan de nouveaux marchés
-MAX_TRADES_SIMULTANES   = 10         # 10 marchés max = 1 par marché
+CHECK_INTERVAL          = 10
+PAUSE_SCAN              = 30
+MAX_TRADES_SIMULTANES   = 10
 
-# ── Détection signal mean reversion — surveillance temps réel
-SEUIL_MOUVEMENT_PCT     = 0.50   # dès que le prix bouge de 0.50% → signal
-VOLUME_MINI             = 0.30   # volume min vs moyenne 24h
-STOP_LOSS_FIXE          = 3.0    # stop fixe = -3€ par trade, ni plus ni moins
+# ── Détection signal mean reversion
+SEUIL_MOUVEMENT_PCT     = 0.50
+VOLUME_MINI             = 0.25
+STOP_LOSS_FIXE          = 5.0
 
 # ── Filtre RSI 1h
-RSI_SEUIL_BAS           = 45     # RSI < 45 → marché baissier → inverser ACHAT en VENTE
-RSI_SEUIL_HAUT          = 55     # RSI > 55 → marché haussier → inverser VENTE en ACHAT
+RSI_SEUIL_BAS           = 45
+RSI_SEUIL_HAUT          = 55
 RSI_PERIODE             = 14
 
 # ── Protections
 KILL_SWITCH_JOUR        = -10.0
 SEUIL_RUINE             = 300.0
 
-# ── Lock profits par paliers proportionnels au capital
+# ── Lock profits paliers
 LOCK_PALIERS_PCT = [0.15, 0.20, 0.30, 0.60, 1.00, 1.60, 2.40, 3.60, 5.00, 7.00, 10.00, 15.00, 20.00, 30.00, 40.00]
 
 def get_palier_lock(pnl_max, capital):
-    """Retourne le gain garanti selon le PnL max atteint — proportionnel au capital."""
     lock = 0.0
     for pct in LOCK_PALIERS_PCT:
         palier_eur = round(capital * pct / 100, 2)
@@ -73,7 +72,6 @@ KELLY_CAP               = 0.20
 TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
-# ── 10 marchés — trading 24h/24, 7j/7
 MARCHES = [
     "NEARUSDT", "SOLUSDT",  "BNBUSDT",
     "XRPUSDT",  "AVAXUSDT", "LINKUSDT",
@@ -95,17 +93,16 @@ KRAKEN_SYMBOLS = {
 }
 
 def get_marches_actifs():
-    """Retourne tous les marchés — trading 24h/24, 7j/7."""
     return MARCHES
 
 # ═══════════════════════════════════════════════════════════════
 #  ÉTAT GLOBAL
 # ═══════════════════════════════════════════════════════════════
-trades_ouverts    = {}    # { symbole: True }
-prix_reference    = {}    # { symbole: prix_au_moment_du_scan }
-cooldown_marches  = {}    # { symbole: timestamp_fin_cooldown }
-pertes_par_marche = {}    # { symbole: nb_pertes_consecutives }
-trades_lock       = None  # initialisé dans boucle_principale()
+trades_ouverts    = {}
+prix_reference    = {}
+cooldown_marches  = {}
+pertes_par_marche = {}
+trades_lock       = None
 
 log.info("=" * 60)
 log.info("  BOT REIVAX284 — V4")
@@ -200,7 +197,6 @@ def calc_atr(df, periode=14):
         return 0.0
 
 def calc_volume_ratio(df):
-    """Ratio bougie fermée vs moyenne 24h."""
     try:
         volumes = df['volume'].tolist()
         if len(volumes) < 10:
@@ -210,13 +206,12 @@ def calc_volume_ratio(df):
         if nb == 0:
             return 0.0
         moyenne = sum(echantillon) / nb
-        recent  = volumes[-2]   # dernière bougie FERMÉE
+        recent  = volumes[-2]
         return round(recent / moyenne, 2) if moyenne > 0 else 0.0
     except Exception:
         return 0.0
 
 def calc_rsi_1h(df, periode=14):
-    """Calcule le RSI sur les bougies 1h."""
     try:
         if len(df) < periode + 1:
             return 50.0
@@ -226,14 +221,13 @@ def calc_rsi_1h(df, periode=14):
         return 50.0
 
 # ═══════════════════════════════════════════════════════════════
-#  DÉTECTION SIGNAL — SURVEILLANCE TEMPS RÉEL
+#  DÉTECTION SIGNAL
 # ═══════════════════════════════════════════════════════════════
 async def analyser_marche(session, symbole):
     prix_actuel = await get_prix_actuel(session, symbole)
     if prix_actuel is None:
         return "NEUTRE", {}
 
-    # Enregistrement du prix de référence au premier passage
     if symbole not in prix_reference:
         prix_reference[symbole] = prix_actuel
         log.info(f"  {symbole} : prix référence enregistré @ {prix_actuel}")
@@ -246,7 +240,6 @@ async def analyser_marche(session, symbole):
 
     variation_pct = (prix_actuel - prix_ref) / prix_ref * 100
 
-    # Récupération des données techniques
     df_15m = await get_klines(session, symbole, interval=15, limite=50)
     df_1h  = await get_klines(session, symbole, interval=60, limite=50)
 
@@ -261,7 +254,6 @@ async def analyser_marche(session, symbole):
     if df_1h is not None and len(df_1h) >= 20:
         rsi_1h = calc_rsi_1h(df_1h, RSI_PERIODE)
 
-    # Filtre volume
     if vol_ratio < VOLUME_MINI:
         log.info(f"  {symbole} : Vol {vol_ratio:.2f}x | Variation={variation_pct:+.2f}% → skip volume")
         return "NEUTRE", {}
@@ -288,10 +280,6 @@ async def analyser_marche(session, symbole):
     # Signal VENTE : prix a monté de ≥ 0.50%
     if variation_pct >= SEUIL_MOUVEMENT_PCT:
         prix_reference[symbole] = prix_actuel
-        if rsi_1h < RSI_SEUIL_BAS:
-            # RSI < 45 sur une montée → marché baissier → VENTE risquée → on bloque
-            log.info(f"  {symbole} ⛔ VENTE bloquée | RSI={rsi_1h} < {RSI_SEUIL_BAS} → skip")
-            return "NEUTRE", {}
         if rsi_1h > RSI_SEUIL_HAUT:
             log.info(f"  {symbole} 🔄 VENTE→ACHAT | RSI={rsi_1h} > {RSI_SEUIL_HAUT} | Vol={vol_ratio:.2f}x")
             return "ACHAT", details
@@ -314,8 +302,7 @@ def calculer_mise(capital, etat):
 
     mise = capital * MISE_BASE_PCT
 
-    # Kelly fractionné après 30 trades
-    if nb_trades >= MIN_TRADES_KELLY and avg_loss_pct > 0 and avg_win_pct > 0 and nb_trades > 0:
+    if nb_trades >= MIN_TRADES_KELLY and avg_loss_pct > 0 and avg_win_pct > 0:
         win_rate   = nb_wins / nb_trades
         b          = avg_win_pct / avg_loss_pct
         kelly_full = (win_rate * b - (1 - win_rate)) / b
@@ -323,7 +310,6 @@ def calculer_mise(capital, etat):
         if kelly_frac > 0:
             mise = capital * kelly_frac
 
-    # Boost après plusieurs gains consécutifs
     if wins_consec >= WINS_CONFIANCE:
         mise *= BOOST_CONFIANCE
         log.info(f"  💪 Mise boostée +20% ({wins_consec} wins consécutifs)")
@@ -343,13 +329,9 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
         return
 
     mise = calculer_mise(capital, etat_global)
-
-    # Stop loss fixe : -3€ par trade, ni plus ni moins
     stop_loss_eur = STOP_LOSS_FIXE
-
     rsi_1h = details.get("rsi_1h", 50.0)
 
-    # Calcul stop et objectif en prix
     ratio_prix = stop_loss_eur / (mise * LEVIER) if (mise * LEVIER) > 0 else 0.001
     if direction == "ACHAT":
         stop_initial   = round(prix_entree * (1 - ratio_prix), 8)
@@ -358,14 +340,12 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
         stop_initial   = round(prix_entree * (1 + ratio_prix), 8)
         objectif_final = round(prix_entree * (1 - ratio_prix * 2), 8)
 
-    # Numéro de trade — sera attribué dans le lock final
     numero_trade = 0
 
     log.info(f"\n  {'='*55}")
     log.info(f"  TRADE EN COURS [REIVAX284 V4] — {datetime.now().strftime('%H:%M:%S')}")
     log.info(f"  {symbole} ({direction})")
-    log.info(f"  Variation : {details.get('variation_pct', 0):.2f}% | "
-             f"Ref={details.get('prix_ref')} → {details.get('prix_actuel')}")
+    log.info(f"  Variation : {details.get('variation_pct', 0):.2f}% | Ref={details.get('prix_ref')} → {details.get('prix_actuel')}")
     log.info(f"  Vol={details.get('vol_ratio', 0):.2f}x | RSI 1h={rsi_1h} | Stop fixe : -{stop_loss_eur}€")
     log.info(f"  Prix entrée : {prix_entree} | Stop : {stop_initial} | Obj : {objectif_final}")
     log.info(f"  Mise : {mise}€ × x{LEVIER} = {round(mise*LEVIER,2)}€ | Trades : {len(trades_ouverts)}/{MAX_TRADES_SIMULTANES}\n")
@@ -384,13 +364,12 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
     dernier_log     = 0
     pnl_max_atteint = 0.0
     lock_actuel     = 0.0
-    resultat_final  = "PERDU"   # valeur par défaut sécurisée si exception
-    gain_final      = -STOP_LOSS_FIXE  # perte max par défaut sécurisée (-3€)
+    resultat_final  = "PERDU"
+    gain_final      = -STOP_LOSS_FIXE
     prix_sortie     = prix_entree
     pnl             = 0.0
     duree           = 0
 
-    # ── Boucle de surveillance — sans timeout
     while True:
         await asyncio.sleep(CHECK_INTERVAL)
 
@@ -400,7 +379,6 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
 
         prix_sortie = prix_actuel
 
-        # Calcul PnL
         if direction == "ACHAT":
             pnl = round((prix_actuel - prix_entree) / prix_entree * mise * LEVIER, 2)
         else:
@@ -409,7 +387,6 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
         if pnl > pnl_max_atteint:
             pnl_max_atteint = pnl
 
-        # Lock paliers
         nouveau_lock = get_palier_lock(pnl_max_atteint, capital)
         if nouveau_lock > lock_actuel:
             lock_actuel = nouveau_lock
@@ -420,7 +397,6 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
                 f"Gain verrouillé ✅"
             )
 
-        # Sortie lock : PnL redescend sous le palier verrouillé
         if lock_actuel > 0 and pnl < lock_actuel:
             duree = int((time.time() - debut) / 60)
             log.info(f"\n  🔒 SORTIE LOCK [{symbole}] +{lock_actuel}€ (max={pnl_max_atteint:.2f}€) | {duree}min")
@@ -435,13 +411,11 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
             gain_final     = lock_actuel
             break
 
-        # Stop loss
         atteint_stop = (prix_actuel <= stop_initial if direction == "ACHAT"
                         else prix_actuel >= stop_initial)
 
         duree = int((time.time() - debut) / 60)
 
-        # Log toutes les minutes
         if time.time() - dernier_log >= 60:
             lock_flag = f" 🔒{lock_actuel}€" if lock_actuel > 0 else ""
             log.info(f"  [{datetime.now().strftime('%H:%M:%S')}] {symbole} {prix_actuel} | "
@@ -463,7 +437,7 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
             gain_final = pnl
             break
 
-    # ── Libérer le marché + mise à jour état global dans un seul lock
+    # ── Libérer + mise à jour dans un seul lock atomique
     telegram_banni = False
     async with trades_lock:
         trades_ouverts.pop(symbole, None)
@@ -487,7 +461,6 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
             cooldown_marches.pop(symbole, None)
             log.info(f"  ✅ [{symbole}] libéré — trade gagnant")
 
-        # Mise à jour capital et stats dans le même lock — pas de race condition
         etat_global["nb_trades"] = etat_global.get("nb_trades", 0) + 1
         numero_trade             = etat_global["nb_trades"]
         etat_global["capital"]   = round(etat_global["capital"] + gain_final, 2)
@@ -528,7 +501,6 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
             'vol_ratio':     details.get("vol_ratio", 0.0),
         })
 
-    # Telegram HORS du lock pour ne pas le bloquer
     if telegram_banni:
         await telegram(session,
             f"🐉❄️ <b>{symbole} BANNI jusqu'à minuit</b>\n"
@@ -555,7 +527,6 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
     sauvegarder_etat(etat_global)
     afficher_tableau_de_bord(etat_global)
 
-    # Rapport Telegram après chaque trade
     nb_trades_total = etat_global.get("nb_trades", 0)
     nb_wins   = etat_global.get("nb_wins", 0)
     win_rate  = (nb_wins / nb_trades_total * 100) if nb_trades_total > 0 else 0
@@ -597,7 +568,6 @@ def reset_pnl_jour_si_nouveau_jour(etat):
 #  RAPPORT QUOTIDIEN
 # ═══════════════════════════════════════════════════════════════
 async def envoyer_rapport_quotidien(session, etat):
-    """Envoie chaque jour à 19h Guyane (22h UTC)."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -612,26 +582,26 @@ async def envoyer_rapport_quotidien(session, etat):
     if not trades_jour:
         return
 
-    gains_jour  = {}
-    wins_jour   = {}
-    pertes_jour = {}
-    rsi_jour    = {}
-    duree_wins  = []
+    gains_jour   = {}
+    wins_jour    = {}
+    pertes_jour  = {}
+    rsi_jour     = {}
+    duree_wins   = []
     duree_pertes = []
-    vol_wins    = []
-    vol_pertes  = []
+    vol_wins     = []
+    vol_pertes   = []
     heure_pertes = {}
 
     for h in trades_jour:
-        marche   = h.get("marche", "?")
-        gain     = h.get("gain", 0)
-        resultat = h.get("resultat", "")
-        duree    = h.get("duree_minutes", 0)
-        rsi      = h.get("rsi", 50.0)
-        vol      = h.get("vol_ratio", 0.0)
+        marche    = h.get("marche", "?")
+        gain      = h.get("gain", 0)
+        resultat  = h.get("resultat", "")
+        duree     = h.get("duree_minutes", 0)
+        rsi       = h.get("rsi", 50.0)
+        vol       = h.get("vol_ratio", 0.0)
         heure_str = h.get("heure", "")
 
-        gains_jour[marche]  = round(gains_jour.get(marche, 0) + gain, 2)
+        gains_jour[marche] = round(gains_jour.get(marche, 0) + gain, 2)
         rsi_jour.setdefault(marche, []).append(rsi)
 
         if resultat == "GAGNE":
@@ -647,7 +617,6 @@ async def envoyer_rapport_quotidien(session, etat):
                 tranche = f"{heure_guyane:02d}h"
                 heure_pertes[tranche] = heure_pertes.get(tranche, 0) + 1
 
-    # Graphique capital intraday
     try:
         capitaux_jour = []
         heures_jour   = []
@@ -663,8 +632,7 @@ async def envoyer_rapport_quotidien(session, etat):
                     color='#e94560', linewidth=2.5,
                     marker='o', markersize=5,
                     markerfacecolor='white', markeredgecolor='#e94560')
-            ax.axhline(y=capitaux_jour[0], color='#ffffff',
-                       linewidth=1, linestyle='--', alpha=0.4)
+            ax.axhline(y=capitaux_jour[0], color='#ffffff', linewidth=1, linestyle='--', alpha=0.4)
             ax.set_xticks(range(len(heures_jour)))
             ax.set_xticklabels(heures_jour, color='#aaaaaa', fontsize=7, rotation=45)
             ax.set_ylabel('Capital (€)', color='#aaaaaa', fontsize=9)
@@ -680,8 +648,7 @@ async def envoyer_rapport_quotidien(session, etat):
                 color='white', fontsize=11, fontweight='bold', pad=10)
             plt.tight_layout(pad=1.5)
             buf = io.BytesIO()
-            plt.savefig(buf, format='png', dpi=150,
-                        bbox_inches='tight', facecolor='#1a1a2e')
+            plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='#1a1a2e')
             buf.seek(0)
             plt.close()
             if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
@@ -689,10 +656,8 @@ async def envoyer_rapport_quotidien(session, etat):
                 form_data = aiohttp.FormData()
                 form_data.add_field('chat_id', TELEGRAM_CHAT_ID)
                 form_data.add_field('caption', f'Journee du {date_affich}')
-                form_data.add_field('photo', buf, filename='journee.png',
-                                    content_type='image/png')
-                await session.post(url_photo, data=form_data,
-                                   timeout=aiohttp.ClientTimeout(total=30))
+                form_data.add_field('photo', buf, filename='journee.png', content_type='image/png')
+                await session.post(url_photo, data=form_data, timeout=aiohttp.ClientTimeout(total=30))
     except Exception as e:
         log.error(f"Erreur graphique quotidien : {e}")
 
@@ -709,11 +674,11 @@ async def envoyer_rapport_quotidien(session, etat):
 
     lignes_marches = []
     for marche, gain in classement:
-        emoji  = "✅" if gain >= 0 else "❌"
-        s_gain = f"{'+' if gain>=0 else ''}{gain}€"
-        s_wl   = f"{wins_jour.get(marche,0)}G/{pertes_jour.get(marche,0)}P"
+        emoji    = "✅" if gain >= 0 else "❌"
+        s_gain   = f"{'+' if gain>=0 else ''}{gain}€"
+        s_wl     = f"{wins_jour.get(marche,0)}G/{pertes_jour.get(marche,0)}P"
         rsi_list = rsi_jour.get(marche, [50.0])
-        rsi_m  = round(sum(rsi_list) / len(rsi_list), 1)
+        rsi_m    = round(sum(rsi_list) / len(rsi_list), 1)
         lignes_marches.append(
             f"{emoji} <code>{marche:<12} {s_gain:<10} {s_wl:<6} RSI:{rsi_m}</code>"
         )
@@ -724,8 +689,8 @@ async def envoyer_rapport_quotidien(session, etat):
     else:
         lignes_pertes_h = "Aucune perte"
 
-    top3   = classement[:3]
-    pires3 = classement[-3:][::-1]
+    top3     = classement[:3]
+    pires3   = classement[-3:][::-1]
     msg_top  = "\n".join([f"🏆 {m} {'+' if g>=0 else ''}{g}€" for m, g in top3])
     msg_pire = "\n".join([f"💀 {m} {g}€" for m, g in pires3 if g < 0])
 
@@ -756,7 +721,6 @@ async def envoyer_rapport_quotidien(session, etat):
 #  RAPPORT HEBDOMADAIRE
 # ═══════════════════════════════════════════════════════════════
 async def envoyer_rapport_hebdomadaire(session, etat):
-    """Envoie chaque dimanche à 19h Guyane (22h UTC)."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -789,31 +753,22 @@ async def envoyer_rapport_hebdomadaire(session, etat):
     capitaux     = [capital_par_jour[j] for j in jours_tries]
     labels_jours = [j[5:] for j in jours_tries]
 
-    # Graphique
     try:
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7),
-                                        gridspec_kw={'height_ratios': [3, 1]})
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), gridspec_kw={'height_ratios': [3, 1]})
         fig.patch.set_facecolor('#1a1a2e')
-
         ax1.set_facecolor('#16213e')
         if len(capitaux) >= 2:
-            ax1.plot(range(len(jours_tries)), capitaux,
-                     color='#e94560', linewidth=2.5,
-                     marker='o', markersize=7,
-                     markerfacecolor='white', markeredgecolor='#e94560',
-                     markeredgewidth=2)
+            ax1.plot(range(len(jours_tries)), capitaux, color='#e94560', linewidth=2.5,
+                     marker='o', markersize=7, markerfacecolor='white',
+                     markeredgecolor='#e94560', markeredgewidth=2)
             ax1.fill_between(range(len(jours_tries)), capitaux, CAPITAL_INITIAL,
-                              where=[c >= CAPITAL_INITIAL for c in capitaux],
-                              color='#e94560', alpha=0.15)
+                              where=[c >= CAPITAL_INITIAL for c in capitaux], color='#e94560', alpha=0.15)
             ax1.fill_between(range(len(jours_tries)), capitaux, CAPITAL_INITIAL,
-                              where=[c < CAPITAL_INITIAL for c in capitaux],
-                              color='#ff4444', alpha=0.25)
-
+                              where=[c < CAPITAL_INITIAL for c in capitaux], color='#ff4444', alpha=0.25)
         ax1.axhline(y=CAPITAL_INITIAL, color='#ffffff', linewidth=1, linestyle='--', alpha=0.4)
         for i, (jour, cap) in enumerate(zip(jours_tries, capitaux)):
             couleur = '#00ff88' if cap >= CAPITAL_INITIAL else '#ff4444'
-            ax1.annotate(f'{cap}€', xy=(i, cap),
-                         xytext=(0, 12), textcoords='offset points',
+            ax1.annotate(f'{cap}€', xy=(i, cap), xytext=(0, 12), textcoords='offset points',
                          ha='center', fontsize=8, color=couleur, fontweight='bold')
         ax1.set_xticks(range(len(jours_tries)))
         ax1.set_xticklabels(labels_jours, color='#aaaaaa', fontsize=9)
@@ -822,7 +777,6 @@ async def envoyer_rapport_hebdomadaire(session, etat):
         for spine in ax1.spines.values():
             spine.set_color('#333366')
         ax1.grid(True, alpha=0.1, color='#ffffff')
-
         net  = etat["capital"] - CAPITAL_INITIAL
         perf = (net / CAPITAL_INITIAL) * 100
         ax1.set_title(
@@ -831,7 +785,6 @@ async def envoyer_rapport_hebdomadaire(session, etat):
             f' ({"+"+str(round(perf,2))+"%" if perf>=0 else str(round(perf,2))+"%"})'
             f' | Capital : {etat["capital"]}€',
             color='white', fontsize=11, fontweight='bold', pad=12)
-
         ax2.set_facecolor('#16213e')
         pnl_valeurs = []
         for i, jour in enumerate(jours_tries):
@@ -839,10 +792,8 @@ async def envoyer_rapport_hebdomadaire(session, etat):
                 pnl_valeurs.append(round(capitaux[0] - CAPITAL_INITIAL, 2))
             else:
                 pnl_valeurs.append(round(capitaux[i] - capitaux[i-1], 2))
-
         couleurs = ['#00ff88' if p >= 0 else '#ff4444' for p in pnl_valeurs]
-        bars = ax2.bar(range(len(jours_tries)), pnl_valeurs,
-                        color=couleurs, alpha=0.8, width=0.6)
+        bars = ax2.bar(range(len(jours_tries)), pnl_valeurs, color=couleurs, alpha=0.8, width=0.6)
         ax2.axhline(y=0, color='#ffffff', linewidth=0.8, alpha=0.4)
         ax2.set_xticks(range(len(jours_tries)))
         ax2.set_xticklabels(labels_jours, color='#aaaaaa', fontsize=9)
@@ -858,27 +809,21 @@ async def envoyer_rapport_hebdomadaire(session, etat):
                          bar.get_height() + (0.2 if val >= 0 else -1.2),
                          f'{"+"+str(val)+"€" if val >= 0 else str(val)+"€"}',
                          ha='center', fontsize=8, color=couleur, fontweight='bold')
-
         plt.tight_layout(pad=2.0)
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=150,
-                    bbox_inches='tight', facecolor='#1a1a2e')
+        plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='#1a1a2e')
         buf.seek(0)
         plt.close()
-
         if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
             url_photo = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
             form_data = aiohttp.FormData()
             form_data.add_field('chat_id', TELEGRAM_CHAT_ID)
             form_data.add_field('caption', f'Progression semaine du {date_debut} au {date_fin}')
-            form_data.add_field('photo', buf, filename='progression.png',
-                                content_type='image/png')
-            await session.post(url_photo, data=form_data,
-                               timeout=aiohttp.ClientTimeout(total=30))
+            form_data.add_field('photo', buf, filename='progression.png', content_type='image/png')
+            await session.post(url_photo, data=form_data, timeout=aiohttp.ClientTimeout(total=30))
     except Exception as e:
         log.error(f"Erreur graphique hebdomadaire : {e}")
 
-    # Rapport texte semaine + total
     gains_total    = {}
     wins_total     = {}
     pertes_total   = {}
@@ -890,13 +835,11 @@ async def envoyer_rapport_hebdomadaire(session, etat):
         gain     = h.get("gain", 0)
         resultat = h.get("resultat", "")
         semaine  = h.get("heure", "") >= il_y_a_7_jours
-
         gains_total[marche] = round(gains_total.get(marche, 0) + gain, 2)
         if resultat == "GAGNE":
             wins_total[marche] = wins_total.get(marche, 0) + 1
         else:
             pertes_total[marche] = pertes_total.get(marche, 0) + 1
-
         if semaine:
             if resultat == "GAGNE":
                 wins_semaine[marche] = wins_semaine.get(marche, 0) + 1
@@ -971,7 +914,6 @@ async def boucle_principale():
     init_database()
     etat = charger_etat()
 
-    # Initialiser les champs manquants
     for champ, valeur in [
         ("capital", CAPITAL_INITIAL),
         ("pnl_jour", 0.0),
@@ -1011,7 +953,6 @@ async def boucle_principale():
 
                 maintenant_utc = datetime.utcnow()
 
-                # Rapport quotidien à 19h Guyane = 22h UTC
                 if (maintenant_utc.hour == 22 and
                     maintenant_utc.minute < 1 and
                     etat.get("dernier_rapport_quotidien", "") != maintenant_utc.strftime('%Y-%m-%d')):
@@ -1019,7 +960,6 @@ async def boucle_principale():
                     etat["dernier_rapport_quotidien"] = maintenant_utc.strftime('%Y-%m-%d')
                     sauvegarder_etat(etat)
 
-                # Rapport hebdomadaire dimanche à 22h UTC
                 if (maintenant_utc.weekday() == 6 and
                     maintenant_utc.hour == 22 and
                     maintenant_utc.minute < 1 and
@@ -1028,7 +968,6 @@ async def boucle_principale():
                     etat["derniere_semaine"] = maintenant_utc.strftime('%Y-%W')
                     sauvegarder_etat(etat)
 
-                # Vérification protections
                 statut = verifier_protections(etat, etat["capital"])
                 if statut == "RUINE":
                     await telegram(session,
@@ -1039,7 +978,6 @@ async def boucle_principale():
                     etat = charger_etat()
                     continue
 
-                # Scan des marchés disponibles
                 async with trades_lock:
                     slots_libres        = MAX_TRADES_SIMULTANES - len(trades_ouverts)
                     marches_actifs      = get_marches_actifs()
@@ -1072,7 +1010,6 @@ async def boucle_principale():
                     await asyncio.sleep(PAUSE_SCAN)
                     continue
 
-                # Trier par variation la plus forte
                 meilleurs = sorted(
                     signaux.items(),
                     key=lambda x: x[1]["details"].get("variation_pct", 0),
@@ -1093,8 +1030,7 @@ async def boucle_principale():
                     asyncio.create_task(
                         executer_trade(
                             session, symbole, sig["direction"],
-                            etat["capital"],
-                            sig["details"], etat
+                            etat["capital"], sig["details"], etat
                         )
                     )
 
