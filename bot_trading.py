@@ -288,9 +288,9 @@ async def analyser_marche(session, symbole):
     # Signal VENTE : prix a monté de ≥ 0.50%
     if variation_pct >= SEUIL_MOUVEMENT_PCT:
         prix_reference[symbole] = prix_actuel
-        if rsi_1h < 40:
-            # RSI trop bas sur une montée → marché baissier → VENTE risquée → on bloque
-            log.info(f"  {symbole} ⛔ VENTE bloquée | RSI={rsi_1h} < 40 → marché baissier sur montée | Vol={vol_ratio:.2f}x")
+        if rsi_1h < RSI_SEUIL_BAS:
+            # RSI < 45 sur une montée → marché baissier → VENTE risquée → on bloque
+            log.info(f"  {symbole} ⛔ VENTE bloquée | RSI={rsi_1h} < {RSI_SEUIL_BAS} → skip")
             return "NEUTRE", {}
         if rsi_1h > RSI_SEUIL_HAUT:
             log.info(f"  {symbole} 🔄 VENTE→ACHAT | RSI={rsi_1h} > {RSI_SEUIL_HAUT} | Vol={vol_ratio:.2f}x")
