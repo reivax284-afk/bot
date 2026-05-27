@@ -41,7 +41,6 @@ MAX_TRADES_SIMULTANES   = 10         # 10 marchés max = 1 par marché
 SEUIL_MOUVEMENT_PCT     = 0.50   # dès que le prix bouge de 0.50% → signal
 VOLUME_MINI             = 0.30   # volume min vs moyenne 24h
 STOP_LOSS_FIXE          = 3.0    # stop fixe = -3€ par trade, ni plus ni moins
-ADX_MAX                 = 40     # si ADX > 40 → tendance forte → on ne trade pas
 
 # ── Filtre RSI 1h
 RSI_SEUIL_BAS           = 45     # RSI < 45 → marché baissier → inverser ACHAT en VENTE
@@ -191,15 +190,6 @@ async def get_prix_actuel(session, symbole):
 # ═══════════════════════════════════════════════════════════════
 #  INDICATEURS
 # ═══════════════════════════════════════════════════════════════
-def calc_adx(df, periode=14):
-    try:
-        from ta.trend import ADXIndicator
-        ind = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=periode)
-        val = ind.adx().iloc[-1]
-        return round(float(val), 2) if not pd.isna(val) else 0.0
-    except Exception:
-        return 0.0
-
 def calc_atr(df, periode=14):
     try:
         val = AverageTrueRange(
@@ -263,29 +253,21 @@ async def analyser_marche(session, symbole):
     vol_ratio = 0.0
     atr_val   = 0.0
     rsi_1h    = 50.0
-    adx_val   = 0.0
 
     if df_15m is not None and len(df_15m) >= 15:
         vol_ratio = calc_volume_ratio(df_15m)
         atr_val   = calc_atr(df_15m)
-        adx_val   = calc_adx(df_15m)
 
     if df_1h is not None and len(df_1h) >= 20:
         rsi_1h = calc_rsi_1h(df_1h, RSI_PERIODE)
 
     # Filtre volume
     if vol_ratio < VOLUME_MINI:
-        log.info(f"  {symbole} : Vol {vol_ratio:.2f}x | ADX={adx_val} | Variation={variation_pct:+.2f}% → skip volume")
-        return "NEUTRE", {}
-
-    # Filtre ADX — tendance trop forte → mean reversion risquée
-    if adx_val > ADX_MAX:
-        log.info(f"  {symbole} : ADX {adx_val} > {ADX_MAX} → tendance forte → skip")
+        log.info(f"  {symbole} : Vol {vol_ratio:.2f}x | Variation={variation_pct:+.2f}% → skip volume")
         return "NEUTRE", {}
 
     details = {
         "atr":           atr_val,
-        "adx":           adx_val,
         "vol_ratio":     vol_ratio,
         "rsi_1h":        rsi_1h,
         "variation_pct": abs(variation_pct),
@@ -297,7 +279,6 @@ async def analyser_marche(session, symbole):
     if variation_pct <= -SEUIL_MOUVEMENT_PCT:
         prix_reference[symbole] = prix_actuel
         if rsi_1h < RSI_SEUIL_BAS:
-            # Marché baissier → tendance baissière confirmée → VENTE
             log.info(f"  {symbole} 🔄 ACHAT→VENTE | RSI={rsi_1h} < {RSI_SEUIL_BAS} | Vol={vol_ratio:.2f}x")
             return "VENTE", details
         else:
@@ -307,15 +288,18 @@ async def analyser_marche(session, symbole):
     # Signal VENTE : prix a monté de ≥ 0.50%
     if variation_pct >= SEUIL_MOUVEMENT_PCT:
         prix_reference[symbole] = prix_actuel
+        if rsi_1h < 40:
+            # RSI trop bas sur une montée → marché baissier → VENTE risquée → on bloque
+            log.info(f"  {symbole} ⛔ VENTE bloquée | RSI={rsi_1h} < 40 → marché baissier sur montée | Vol={vol_ratio:.2f}x")
+            return "NEUTRE", {}
         if rsi_1h > RSI_SEUIL_HAUT:
-            # Marché haussier → tendance haussière confirmée → ACHAT
             log.info(f"  {symbole} 🔄 VENTE→ACHAT | RSI={rsi_1h} > {RSI_SEUIL_HAUT} | Vol={vol_ratio:.2f}x")
             return "ACHAT", details
         else:
             log.info(f"  {symbole} ✅ VENTE | Montée={variation_pct:.2f}% | RSI={rsi_1h} | Vol={vol_ratio:.2f}x")
             return "VENTE", details
 
-    log.info(f"  {symbole} : Variation={variation_pct:+.2f}% (seuil ±{SEUIL_MOUVEMENT_PCT}%) | RSI={rsi_1h} | ADX={adx_val}")
+    log.info(f"  {symbole} : Variation={variation_pct:+.2f}% (seuil ±{SEUIL_MOUVEMENT_PCT}%) | RSI={rsi_1h}")
     return "NEUTRE", {}
 
 # ═══════════════════════════════════════════════════════════════
@@ -390,7 +374,7 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
         f"🐉📊 <b>TRADE OUVERT — REIVAX284 V4</b>\n"
         f"{'🟢 ACHAT' if direction == 'ACHAT' else '🔴 VENTE'} {symbole}\n"
         f"Variation : {details.get('variation_pct', 0):.2f}% depuis ref\n"
-        f"Volume : {details.get('vol_ratio', 0):.2f}x | RSI 1h : {rsi_1h} | ADX : {details.get('adx', 0):.1f}\n"
+        f"Volume : {details.get('vol_ratio', 0):.2f}x | RSI 1h : {rsi_1h}\n"
         f"Prix : {prix_entree} | Stop : {stop_initial}\n"
         f"Mise : {mise}€ × x{LEVIER} | Stop max : -{stop_loss_eur}€\n"
         f"Trades : {len(trades_ouverts)}/{MAX_TRADES_SIMULTANES}"
@@ -564,7 +548,7 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
         'capital_apres': etat_global['capital'],
         'duree_minutes': duree,
         'score':         None,
-        'adx':           details.get("adx", None),
+        'adx':           None,
         'atr':           details.get("atr", None),
         'rsi':           rsi_1h,
     })
