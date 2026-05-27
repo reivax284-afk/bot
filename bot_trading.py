@@ -43,9 +43,12 @@ VOLUME_MINI             = 0.25
 STOP_LOSS_FIXE          = 5.0
 
 # ── Filtre RSI 1h
-RSI_SEUIL_BAS           = 45
-RSI_SEUIL_HAUT          = 55
+RSI_SEUIL_BAS           = 38
+RSI_SEUIL_HAUT          = 62
 RSI_PERIODE             = 14
+
+# ── Filtre ATR minimum
+ATR_MIN_PCT             = 0.80   # ATR < 0.80% du prix → marché trop calme → skip
 
 # ── Protections
 KILL_SWITCH_JOUR        = -10.0
@@ -257,6 +260,13 @@ async def analyser_marche(session, symbole):
     if vol_ratio < VOLUME_MINI:
         log.info(f"  {symbole} : Vol {vol_ratio:.2f}x | Variation={variation_pct:+.2f}% → skip volume")
         return "NEUTRE", {}
+
+    # Filtre ATR — marché trop calme → mean reversion peu fiable
+    if atr_val > 0 and prix_actuel > 0:
+        atr_pct = (atr_val / prix_actuel) * 100
+        if atr_pct < ATR_MIN_PCT:
+            log.info(f"  {symbole} : ATR {atr_pct:.2f}% < {ATR_MIN_PCT}% → marché trop calme → skip")
+            return "NEUTRE", {}
 
     details = {
         "atr":           atr_val,
