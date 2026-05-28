@@ -39,7 +39,7 @@ MAX_TRADES_SIMULTANES   = 10         # 10 marchés max = 1 par marché
 
 # ── Détection signal mean reversion — surveillance temps réel
 SEUIL_MOUVEMENT_PCT     = 0.50   # dès que le prix bouge de 0.50% → signal
-VOLUME_MINI             = 0.30   # volume min vs moyenne 24h
+VOLUME_MINI             = 0.25   # volume min vs moyenne 24h
 STOP_LOSS_FIXE          = 3.0    # stop fixe = -3€ par trade, ni plus ni moins
 
 # ── Filtre RSI 1h
@@ -66,9 +66,6 @@ def get_palier_lock(pnl_max, capital):
 # ── Gestion mise dynamique
 WINS_CONFIANCE          = 3
 BOOST_CONFIANCE         = 1.20
-MIN_TRADES_KELLY        = 30
-KELLY_FRACTION          = 0.25
-KELLY_CAP               = 0.20
 
 TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
@@ -104,7 +101,6 @@ def get_marches_actifs():
 trades_ouverts    = {}    # { symbole: True }
 prix_reference    = {}    # { symbole: prix_au_moment_du_scan }
 cooldown_marches  = {}    # { symbole: timestamp_fin_cooldown }
-pertes_par_marche = {}    # { symbole: nb_pertes_consecutives }
 trades_lock       = None  # initialisé dans boucle_principale()
 
 log.info("=" * 60)
@@ -306,22 +302,9 @@ async def analyser_marche(session, symbole):
 #  GESTION MISE DYNAMIQUE
 # ═══════════════════════════════════════════════════════════════
 def calculer_mise(capital, etat):
-    nb_trades    = etat.get("nb_trades", 0)
-    nb_wins      = etat.get("nb_wins", 0)
-    wins_consec  = etat.get("wins_consecutifs", 0)
-    avg_win_pct  = etat.get("avg_win_pct", 0)
-    avg_loss_pct = etat.get("avg_loss_pct", 0)
+    wins_consec = etat.get("wins_consecutifs", 0)
 
     mise = capital * MISE_BASE_PCT
-
-    # Kelly fractionné après 30 trades
-    if nb_trades >= MIN_TRADES_KELLY and avg_loss_pct > 0 and avg_win_pct > 0 and nb_trades > 0:
-        win_rate   = nb_wins / nb_trades
-        b          = avg_win_pct / avg_loss_pct
-        kelly_full = (win_rate * b - (1 - win_rate)) / b
-        kelly_frac = max(0.0, min(kelly_full * KELLY_FRACTION, KELLY_CAP))
-        if kelly_frac > 0:
-            mise = capital * kelly_frac
 
     # Boost après plusieurs gains consécutifs
     if wins_consec >= WINS_CONFIANCE:
@@ -464,28 +447,10 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
             break
 
     # ── Libérer le marché + mise à jour état global dans un seul lock
-    telegram_banni = False
     async with trades_lock:
         trades_ouverts.pop(symbole, None)
-        if resultat_final == "PERDU":
-            pertes_marche = pertes_par_marche.get(symbole, 0) + 1
-            pertes_par_marche[symbole] = pertes_marche
-            if pertes_marche >= 2:
-                maintenant_guyane = datetime.utcnow() - timedelta(hours=3)
-                minuit_demain     = maintenant_guyane.replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                ) + timedelta(days=1)
-                minuit_demain_utc = minuit_demain + timedelta(hours=3)
-                cooldown_marches[symbole] = minuit_demain_utc.timestamp()
-                pertes_par_marche[symbole] = 0
-                telegram_banni = True
-                log.info(f"  ❄️ [{symbole}] 2 pertes consécutives → banni jusqu'à minuit")
-            else:
-                log.info(f"  ⚠️ [{symbole}] 1ère perte — encore 1 trade autorisé")
-        else:
-            pertes_par_marche[symbole] = 0
-            cooldown_marches.pop(symbole, None)
-            log.info(f"  ✅ [{symbole}] libéré — trade gagnant")
+        cooldown_marches.pop(symbole, None)
+        log.info(f"  ✅ [{symbole}] libéré")
 
         # Mise à jour capital et stats dans le même lock — pas de race condition
         etat_global["nb_trades"] = etat_global.get("nb_trades", 0) + 1
@@ -499,21 +464,11 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
             etat_global["total_gagne"]         = round(etat_global.get("total_gagne", 0) + gain_final, 2)
             etat_global["pertes_consecutives"] = 0
             etat_global["wins_consecutifs"]    = etat_global.get("wins_consecutifs", 0) + 1
-            n        = etat_global["nb_wins"]
-            gain_pct = (gain_final / max(mise * LEVIER, 1)) * 100
-            etat_global["avg_win_pct"] = round(
-                (etat_global.get("avg_win_pct", 0) * (n - 1) + gain_pct) / n, 4
-            )
         else:
             etat_global["nb_losses"]           = etat_global.get("nb_losses", 0) + 1
             etat_global["total_perdu"]         = round(etat_global.get("total_perdu", 0) + abs(gain_final), 2)
             etat_global["pertes_consecutives"] = etat_global.get("pertes_consecutives", 0) + 1
             etat_global["wins_consecutifs"]    = 0
-            n         = etat_global["nb_losses"]
-            perte_pct = (abs(gain_final) / max(mise * LEVIER, 1)) * 100
-            etat_global["avg_loss_pct"] = round(
-                (etat_global.get("avg_loss_pct", 0) * (n - 1) + perte_pct) / n, 4
-            )
 
         etat_global.setdefault("historique", []).append({
             'heure':         (datetime.utcnow() - timedelta(hours=3)).strftime('%Y-%m-%d %H:%M'),
@@ -527,13 +482,6 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
             'rsi':           rsi_1h,
             'vol_ratio':     details.get("vol_ratio", 0.0),
         })
-
-    # Telegram HORS du lock pour ne pas le bloquer
-    if telegram_banni:
-        await telegram(session,
-            f"🐉❄️ <b>{symbole} BANNI jusqu'à minuit</b>\n"
-            f"2 pertes consécutives sur ce marché"
-        )
 
     enregistrer_trade({
         'marche':        symbole,
@@ -985,8 +933,6 @@ async def boucle_principale():
         ("total_perdu", 0.0),
         ("cumul_net", 0.0),
         ("pertes_consecutives", 0),
-        ("avg_win_pct", 0.0),
-        ("avg_loss_pct", 0.0),
         ("historique", []),
     ]:
         if champ not in etat:
