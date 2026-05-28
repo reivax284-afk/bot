@@ -277,6 +277,9 @@ async def analyser_marche(session, symbole):
         if rsi_1h < RSI_SEUIL_BAS:
             log.info(f"  {symbole} 🔄 ACHAT→VENTE | RSI={rsi_1h} < {RSI_SEUIL_BAS} | Vol={vol_ratio:.2f}x")
             return "VENTE", details
+        elif rsi_1h > 60:
+            log.info(f"  {symbole} ⛔ ACHAT bloqué | RSI={rsi_1h} > 60 → marché suracheté sur chute | Vol={vol_ratio:.2f}x")
+            return "NEUTRE", {}
         else:
             log.info(f"  {symbole} ✅ ACHAT | Chute={variation_pct:.2f}% | RSI={rsi_1h} | Vol={vol_ratio:.2f}x")
             return "ACHAT", details
@@ -284,11 +287,10 @@ async def analyser_marche(session, symbole):
     # Signal VENTE : prix a monté de ≥ 0.50%
     if variation_pct >= SEUIL_MOUVEMENT_PCT:
         prix_reference[symbole] = prix_actuel
-        if rsi_1h < RSI_SEUIL_BAS:
-            # RSI < 45 sur une montée → marché baissier → VENTE risquée → on bloque
-            log.info(f"  {symbole} ⛔ VENTE bloquée | RSI={rsi_1h} < {RSI_SEUIL_BAS} → skip")
+        if rsi_1h < 50:
+            log.info(f"  {symbole} ⛔ VENTE bloquée | RSI={rsi_1h} < 50 → marché baissier sur montée | Vol={vol_ratio:.2f}x")
             return "NEUTRE", {}
-        if rsi_1h > RSI_SEUIL_HAUT:
+        elif rsi_1h > RSI_SEUIL_HAUT:
             log.info(f"  {symbole} 🔄 VENTE→ACHAT | RSI={rsi_1h} > {RSI_SEUIL_HAUT} | Vol={vol_ratio:.2f}x")
             return "ACHAT", details
         else:
