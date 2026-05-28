@@ -487,12 +487,6 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
             cooldown_marches.pop(symbole, None)
             log.info(f"  ✅ [{symbole}] libéré — trade gagnant")
 
-        # Cooldown 1 minute après chaque trade (gagné ou perdu)
-        cooldown_marches[symbole] = max(
-            cooldown_marches.get(symbole, 0),
-            time.time() + 60
-        )
-
         # Mise à jour capital et stats dans le même lock — pas de race condition
         etat_global["nb_trades"] = etat_global.get("nb_trades", 0) + 1
         numero_trade             = etat_global["nb_trades"]
