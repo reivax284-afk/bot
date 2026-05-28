@@ -277,8 +277,8 @@ async def analyser_marche(session, symbole):
         if rsi_1h < RSI_SEUIL_BAS:
             log.info(f"  {symbole} 🔄 ACHAT→VENTE | RSI={rsi_1h} < {RSI_SEUIL_BAS} | Vol={vol_ratio:.2f}x")
             return "VENTE", details
-        elif rsi_1h > 60:
-            log.info(f"  {symbole} ⛔ ACHAT bloqué | RSI={rsi_1h} > 60 → marché suracheté sur chute | Vol={vol_ratio:.2f}x")
+        elif rsi_1h > 55:
+            log.info(f"  {symbole} ⛔ ACHAT bloqué | RSI={rsi_1h} > 55 → marché suracheté sur chute | Vol={vol_ratio:.2f}x")
             return "NEUTRE", {}
         else:
             log.info(f"  {symbole} ✅ ACHAT | Chute={variation_pct:.2f}% | RSI={rsi_1h} | Vol={vol_ratio:.2f}x")
