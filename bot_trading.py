@@ -43,8 +43,8 @@ VOLUME_MINI             = 0.25   # volume min vs moyenne 24h
 STOP_LOSS_FIXE          = 3.0    # stop fixe = -3€ par trade, ni plus ni moins
 
 # ── Filtre RSI 1h — zones de trading
-# ACHAT : RSI entre 45 et 55
-# VENTE : RSI entre 50 et 55
+# ACHAT : RSI entre 60 et 65
+# VENTE : RSI entre 60 et 65
 RSI_PERIODE             = 14
 
 # ── Protections
@@ -108,7 +108,7 @@ log.info("  BOT REIVAX284 — V4")
 log.info(f"  Capital : {CAPITAL_INITIAL}€ | Levier x{LEVIER}")
 log.info(f"  Marchés : {len(MARCHES)} cryptos | 24h/24 — 7j/7")
 log.info(f"  Signal : mouvement ≥ {SEUIL_MOUVEMENT_PCT}% depuis le prix de référence")
-log.info(f"  RSI 1h : ACHAT zone 45-55 | VENTE zone 50-55")
+log.info(f"  RSI 1h : ACHAT zone 60-65 | VENTE zone 60-65")
 log.info(f"  Stop : fixe {STOP_LOSS_FIXE}€ par trade")
 log.info(f"  Kill switch : {KILL_SWITCH_JOUR}€/jour | Ruine : {SEUIL_RUINE}€")
 log.info(f"  Pas de timeout — trades ouverts jusqu'au stop ou au lock")
@@ -274,8 +274,8 @@ async def analyser_marche(session, symbole):
     # Signal ACHAT : prix a chuté de ≥ 0.50%
     if variation_pct <= -SEUIL_MOUVEMENT_PCT:
         prix_reference[symbole] = prix_actuel
-        if rsi_1h < 45 or rsi_1h > 55:
-            log.info(f"  {symbole} ⛔ ACHAT bloqué | RSI={rsi_1h} hors zone 45-55 → skip")
+        if rsi_1h < 60 or rsi_1h > 65:
+            log.info(f"  {symbole} ⛔ ACHAT bloqué | RSI={rsi_1h} hors zone 60-65 → skip")
             return "NEUTRE", {}
         else:
             log.info(f"  {symbole} ✅ ACHAT | Chute={variation_pct:.2f}% | RSI={rsi_1h} | Vol={vol_ratio:.2f}x")
@@ -284,8 +284,8 @@ async def analyser_marche(session, symbole):
     # Signal VENTE : prix a monté de ≥ 0.50%
     if variation_pct >= SEUIL_MOUVEMENT_PCT:
         prix_reference[symbole] = prix_actuel
-        if rsi_1h < 50 or rsi_1h > 55:
-            log.info(f"  {symbole} ⛔ VENTE bloquée | RSI={rsi_1h} hors zone 50-55 → skip")
+        if rsi_1h < 60 or rsi_1h > 65:
+            log.info(f"  {symbole} ⛔ VENTE bloquée | RSI={rsi_1h} hors zone 60-65 → skip")
             return "NEUTRE", {}
         else:
             log.info(f"  {symbole} ✅ VENTE | Montée={variation_pct:.2f}% | RSI={rsi_1h} | Vol={vol_ratio:.2f}x")
