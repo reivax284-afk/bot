@@ -368,7 +368,6 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
     prix_sortie     = prix_entree
     pnl             = 0.0
     duree           = 0
-    do_reverse      = False   # reverse après stop loss
 
     # ── Boucle de surveillance — sans timeout
     while True:
@@ -431,10 +430,8 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
         if atteint_stop:
             if pnl > 0:
                 resultat_final = "GAGNE"
-                do_reverse     = False
             else:
                 resultat_final = "PERDU"
-                do_reverse     = True   # stop loss → reverse immédiat
             log.info(f"\n  🛑 STOP [{symbole}] {'+' if pnl>=0 else ''}{pnl:.2f}€ | {duree}min")
             await telegram(session,
                 f"🐉🛑 <b>STOP</b>\n"
@@ -520,31 +517,6 @@ async def executer_trade(session, symbole, direction, capital, details, etat_glo
         f"{round(etat_global.get('cumul_net',0),2)}€</b>"
     )
 
-    # ── Reverse immédiat si stop loss touché
-    if do_reverse:
-        direction_reverse = "VENTE" if direction == "ACHAT" else "ACHAT"
-        log.info(f"  🔄 REVERSE [{symbole}] → {direction_reverse} immédiat")
-        await telegram(session,
-            f"🐉🔄 <b>REVERSE</b>\n"
-            f"{symbole} → {direction_reverse} immédiat"
-        )
-        details_reverse = {
-            "atr":           details.get("atr", 0.0),
-            "vol_ratio":     details.get("vol_ratio", 0.0),
-            "rsi_1h":        details.get("rsi_1h", 50.0),
-            "variation_pct": 0.0,
-            "prix_ref":      prix_sortie,
-            "prix_actuel":   prix_sortie,
-        }
-        async with trades_lock:
-            if symbole not in trades_ouverts and len(trades_ouverts) < MAX_TRADES_SIMULTANES:
-                trades_ouverts[symbole] = True
-                asyncio.create_task(
-                    executer_trade(
-                        session, symbole, direction_reverse,
-                        etat_global["capital"], details_reverse, etat_global
-                    )
-                )
 
 # ═══════════════════════════════════════════════════════════════
 #  PROTECTIONS
