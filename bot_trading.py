@@ -33,13 +33,13 @@ LEVIER                  = 10
 MISE_BASE_PCT           = 0.10
 MISE_MIN                = 10.0
 MISE_MAX_PCT            = 0.25
-CHECK_INTERVAL          = 10         # secondes entre chaque check prix
+CHECK_INTERVAL          = 3          # secondes entre chaque check prix
 PAUSE_SCAN              = 30         # secondes entre chaque scan de nouveaux marchés
 MAX_TRADES_SIMULTANES   = 10         # 10 marchés max = 1 par marché
 
 # ── Détection signal mean reversion — surveillance temps réel
 SEUIL_MOUVEMENT_PCT     = 0.50   # dès que le prix bouge de 0.50% → signal
-VOLUME_MINI             = 0.35   # volume min vs moyenne 24h
+VOLUME_MINI             = 0.25   # volume min vs moyenne 24h
 STOP_LOSS_FIXE          = 2.0    # stop fixe = -2€ par trade, ni plus ni moins
 
 # ── Filtre RSI 1h
